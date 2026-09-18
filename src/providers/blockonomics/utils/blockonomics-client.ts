@@ -1,16 +1,6 @@
 import { MedusaError } from "@medusajs/framework/utils"
 
-import { BlockonomicsTransaction } from "../types"
-
 export const DEFAULT_BASE_URL = "https://www.blockonomics.co"
-
-/**
- * Raised when Blockonomics cannot look an address up on-chain. Addresses handed
- * out in test mode are placeholders rather than real ones, so the history
- * endpoint rejects them - the payment is then only observable through
- * the callbacks.
- */
-export class UnobservableAddressError extends Error {}
 
 type ClientOptions = {
   apiKey: string
@@ -85,53 +75,6 @@ export class BlockonomicsClient {
     return response.price
   }
 
-  /**
-   * Whether a transaction signals Replace-By-Fee, directly or through an
-   * unconfirmed parent. The sender can replace such a transaction while it is
-   * unconfirmed, so it can't be trusted at 0 confirmations.
-   */
-  async isReplaceable(txid: string): Promise<boolean> {
-    // `rbf` is "Opt-In", "Inherited", or "" when the transaction isn't replaceable.
-    const response = await this.request_<{ rbf?: string }>(
-      "GET",
-      "/api/tx_detail",
-      { txid }
-    )
-
-    return !!response?.rbf
-  }
-
-  /**
-   * Transactions touching an address, split into unconfirmed (`pending`, < 2
-   * confirmations, carrying a `status` with the count) and confirmed (`history`,
-   * 2+ confirmations). Outgoing transactions carry a negative `value`.
-   */
-  async getHistory(address: string): Promise<
-    | {
-        pending: BlockonomicsTransaction[]
-        history: BlockonomicsTransaction[]
-      }
-    | undefined
-  > {
-    try {
-      const response = await this.request_<{
-        pending?: BlockonomicsTransaction[]
-        history?: BlockonomicsTransaction[]
-      }>("GET", "/api/searchhistory", { addr: address })
-
-      return {
-        pending: response?.pending ?? [],
-        history: response?.history ?? [],
-      }
-    } catch (error) {
-      if (error instanceof UnobservableAddressError) {
-        return undefined
-      }
-
-      throw error
-    }
-  }
-
   protected async request_<T>(
     method: "GET" | "POST",
     path: string,
@@ -163,10 +106,6 @@ export class BlockonomicsClient {
     const body = await response.text()
 
     if (!response.ok) {
-      if (response.status === 400 && body.includes("invalid_input")) {
-        throw new UnobservableAddressError(body)
-      }
-
       throw new MedusaError(
         MedusaError.Types.UNEXPECTED_STATE,
         `Blockonomics API responded with ${response.status} for ${path}: ${body}`

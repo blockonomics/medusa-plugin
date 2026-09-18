@@ -1,9 +1,15 @@
 import { PaymentActions, PaymentSessionStatus } from "@medusajs/framework/utils"
 
 import BlockonomicsProviderService from "../../services/blockonomics-provider"
-import { BlockonomicsOptions, BlockonomicsPaymentData } from "../../types"
+import {
+  BlockonomicsOptions,
+  BlockonomicsPayment,
+  BlockonomicsPaymentData,
+  BlockonomicsPaymentStatus,
+} from "../../types"
 
 const ADDRESS = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
+const NEXT_ADDRESS = "bc1qnext0000000000000000000000000000000000"
 const CALLBACK_SECRET = "callback-secret"
 const BTC_PRICE = 100_000
 
@@ -24,31 +30,12 @@ const container = {
   },
 } as any
 
-const buildClient = ({
-  pending = [] as {
-    txid: string
-    value: number
-    status?: number
-    rbf?: number
-  }[],
-  history = [] as { txid: string; value: number }[],
-  replaceable = false,
-} = {}) => ({
-  newAddress: jest.fn().mockResolvedValue(ADDRESS),
-  getPrice: jest.fn().mockResolvedValue(BTC_PRICE),
-  getHistory: jest.fn().mockResolvedValue({ pending, history }),
-  isReplaceable: jest.fn().mockResolvedValue(replaceable),
-})
-
-/**
- * Test-mode addresses are placeholders that the history endpoint rejects, so
- * the client reports them as not observable.
- */
-const buildUnobservableClient = () => ({
-  newAddress: jest.fn().mockResolvedValue(ADDRESS),
-  getPrice: jest.fn().mockResolvedValue(BTC_PRICE),
-  getHistory: jest.fn().mockResolvedValue(undefined),
-  isReplaceable: jest.fn().mockResolvedValue(false),
+const buildClient = ({ price = BTC_PRICE } = {}) => ({
+  newAddress: jest
+    .fn()
+    .mockResolvedValueOnce(ADDRESS)
+    .mockResolvedValue(NEXT_ADDRESS),
+  getPrice: jest.fn().mockResolvedValue(price),
 })
 
 const buildProvider = (
@@ -67,21 +54,60 @@ const buildProvider = (
   return { provider, client }
 }
 
-const sessionData = (
-  overrides: Partial<BlockonomicsPaymentData> = {}
-): BlockonomicsPaymentData => ({
+const payment = (
+  overrides: Partial<BlockonomicsPayment> = {}
+): BlockonomicsPayment => ({
   address: ADDRESS,
-  session_id: "payses_1",
-  fiat_amount: 100,
-  currency_code: "usd",
-  btc_price: BTC_PRICE,
+  expected_fiat: 100,
   expected_satoshis: 100_000,
-  received_satoshis: 0,
-  confirmations: 0,
+  btc_price: BTC_PRICE,
   price_locked_until: Date.now() + 600_000,
+  payment_status: BlockonomicsPaymentStatus.NEW,
+  confirmations: 0,
+  paid_satoshis: 0,
+  paid_fiat: 0,
   txid: null,
   ...overrides,
 })
+
+/**
+ * Session data as the provider stores it: the payments, with the active one
+ * mirrored on top.
+ */
+const sessionData = (
+  payments: BlockonomicsPayment[] = [payment()],
+  overrides: Partial<BlockonomicsPaymentData> = {}
+): BlockonomicsPaymentData => {
+  const active = payments[payments.length - 1]
+
+  return {
+    session_id: "payses_1",
+    fiat_amount: 100,
+    currency_code: "usd",
+    payments,
+    paid_fiat: payments.reduce((sum, p) => sum + p.paid_fiat, 0),
+    address: active.address,
+    expected_fiat: active.expected_fiat,
+    expected_satoshis: active.expected_satoshis,
+    btc_price: active.btc_price,
+    price_locked_until: active.price_locked_until,
+    payment_status: active.payment_status,
+    confirmations: active.confirmations,
+    paid_satoshis: active.paid_satoshis,
+    txid: active.txid,
+    ...overrides,
+  }
+}
+
+const settled = (overrides: Partial<BlockonomicsPayment> = {}) =>
+  payment({
+    payment_status: BlockonomicsPaymentStatus.SETTLED,
+    confirmations: 2,
+    paid_satoshis: 100_000,
+    paid_fiat: 100,
+    txid: "tx",
+    ...overrides,
+  })
 
 describe("BlockonomicsProviderService", () => {
   beforeEach(() => {
@@ -123,7 +149,7 @@ describe("BlockonomicsProviderService", () => {
   })
 
   describe("initiatePayment", () => {
-    it("quotes the fiat amount in satoshis and keys the session by address", async () => {
+    it("quotes the order total on a fresh address and keys the session by it", async () => {
       const { provider, client } = buildProvider()
 
       const result = await provider.initiatePayment({
@@ -139,239 +165,161 @@ describe("BlockonomicsProviderService", () => {
         expect.objectContaining({
           address: ADDRESS,
           session_id: "payses_1",
+          fiat_amount: 100,
+          expected_fiat: 100,
           btc_price: BTC_PRICE,
           // 100 USD at 100,000 USD/BTC is 0.001 BTC
           expected_satoshis: 100_000,
-          received_satoshis: 0,
+          paid_fiat: 0,
+          payment_status: BlockonomicsPaymentStatus.NEW,
         })
       )
+      expect((result.data as BlockonomicsPaymentData).payments).toHaveLength(1)
     })
   })
 
   describe("getPaymentStatus", () => {
     it("stays pending while nothing has arrived", async () => {
-      const { provider } = buildProvider({}, buildClient({}))
+      const { provider } = buildProvider()
 
       const result = await provider.getPaymentStatus({ data: sessionData() })
 
       expect(result.status).toEqual(PaymentSessionStatus.PENDING)
-      expect(result.data).toEqual(
-        expect.objectContaining({ received_satoshis: 0 })
-      )
     })
 
-    it("stays pending while less than the expected amount has arrived", async () => {
-      const { provider } = buildProvider(
-        {},
-        buildClient({
-          pending: [{ txid: "tx", value: 40_000, status: 0 }],
-        })
-      )
+    it("waits while a payment is below the required confirmations", async () => {
+      const { provider } = buildProvider()
 
-      const result = await provider.getPaymentStatus({ data: sessionData() })
+      const result = await provider.getPaymentStatus({
+        data: sessionData([
+          payment({
+            payment_status: BlockonomicsPaymentStatus.IN_PROGRESS,
+            confirmations: 1,
+            txid: "tx",
+          }),
+        ]),
+      })
 
       expect(result.status).toEqual(PaymentSessionStatus.PENDING_AUTHORIZATION)
-      expect(result.data).toEqual(
-        expect.objectContaining({ received_satoshis: 40_000 })
-      )
     })
 
-    it("authorizes once the merchant's confirmation threshold is met", async () => {
-      const { provider } = buildProvider(
-        { confirmations: 1 },
-        buildClient({
-          pending: [{ txid: "tx", value: 100_000, status: 1 }],
-        })
-      )
+    it("is captured once the active address settled in full", async () => {
+      const { provider } = buildProvider()
 
-      const result = await provider.getPaymentStatus({ data: sessionData() })
-
-      expect(result.status).toEqual(PaymentSessionStatus.AUTHORIZED)
-    })
-
-    it("captures once the payment is final on-chain", async () => {
-      const { provider } = buildProvider(
-        { confirmations: 1 },
-        buildClient({
-          history: [{ txid: "tx", value: 100_000 }],
-        })
-      )
-
-      const result = await provider.getPaymentStatus({ data: sessionData() })
+      const result = await provider.getPaymentStatus({
+        data: sessionData([settled()]),
+      })
 
       expect(result.status).toEqual(PaymentSessionStatus.CAPTURED)
       expect(result.data).toEqual(
-        expect.objectContaining({ confirmations: 2, txid: "tx" })
+        expect.objectContaining({ paid_fiat: 100, underpaid: false })
+      )
+    })
+
+    it("waits for the remainder of a settled underpayment", async () => {
+      const { provider } = buildProvider()
+
+      const result = await provider.getPaymentStatus({
+        data: sessionData([settled({ paid_satoshis: 40_000, paid_fiat: 40 })]),
+      })
+
+      expect(result.status).toEqual(PaymentSessionStatus.PENDING_AUTHORIZATION)
+      expect(result.data).toEqual(
+        expect.objectContaining({ paid_fiat: 40, underpaid: true })
       )
     })
 
     it("accepts a shortfall within the merchant's tolerance", async () => {
-      const { provider } = buildProvider(
-        { confirmations: 0, underpaymentTolerance: 0.01 },
-        buildClient({
-          pending: [{ txid: "tx", value: 99_500, status: 0 }],
-        })
-      )
+      const { provider } = buildProvider({ underpaymentTolerance: 0.02 })
 
-      const result = await provider.getPaymentStatus({ data: sessionData() })
+      const result = await provider.getPaymentStatus({
+        data: sessionData([settled({ paid_satoshis: 98_500, paid_fiat: 98.5 })]),
+      })
 
-      expect(result.status).toEqual(PaymentSessionStatus.AUTHORIZED)
+      expect(result.status).toEqual(PaymentSessionStatus.CAPTURED)
     })
 
     it("flags a payment that exceeds the overpayment tolerance", async () => {
-      const { provider } = buildProvider(
-        { confirmations: 0, overpaymentTolerance: 0.05 },
-        buildClient({
-          pending: [{ txid: "tx", value: 200_000, status: 0 }],
-        })
-      )
+      const { provider } = buildProvider()
 
-      const result = await provider.getPaymentStatus({ data: sessionData() })
+      const result = await provider.getPaymentStatus({
+        data: sessionData([settled({ paid_satoshis: 120_000, paid_fiat: 120 })]),
+      })
 
-      expect(result.status).toEqual(PaymentSessionStatus.AUTHORIZED)
+      expect(result.status).toEqual(PaymentSessionStatus.CAPTURED)
       expect(result.data).toEqual(expect.objectContaining({ overpaid: true }))
     })
 
-    it("does not treat a payment as confirmed because a small part of it is", async () => {
-      const { provider } = buildProvider(
-        {},
-        buildClient({
-          pending: [{ txid: "large", value: 90_000, status: 0 }],
-          history: [{ txid: "small", value: 10_000 }],
-        })
-      )
-
-      const result = await provider.getPaymentStatus({ data: sessionData() })
-
-      expect(result.status).toEqual(PaymentSessionStatus.PENDING_AUTHORIZATION)
-      expect(result.data).toEqual(
-        expect.objectContaining({ received_satoshis: 100_000, confirmations: 0 })
-      )
-    })
-
-    it("does not authorize an unconfirmed replace-by-fee payment at 0 confirmations", async () => {
-      const { provider, client } = buildProvider(
-        { confirmations: 0 },
-        buildClient({
-          pending: [{ txid: "tx", value: 100_000, status: 0 }],
-          replaceable: true,
-        })
-      )
-
-      const result = await provider.authorizePayment({ data: sessionData() })
-
-      expect(client.isReplaceable).toHaveBeenCalledWith("tx")
-      expect(result.status).toEqual(PaymentSessionStatus.PENDING_AUTHORIZATION)
-      expect(result.data).toEqual(expect.objectContaining({ replaceable: true }))
-    })
-
-    it("takes the replace-by-fee flag from the history when it carries one", async () => {
-      const { provider, client } = buildProvider(
-        { confirmations: 0 },
-        buildClient({
-          pending: [
-            { txid: "opt-in", value: 50_000, status: 0, rbf: 1 },
-            { txid: "final", value: 50_000, status: 0, rbf: 0 },
-          ],
-        })
-      )
-
-      const result = await provider.getPaymentStatus({ data: sessionData() })
-
-      expect(client.isReplaceable).not.toHaveBeenCalled()
-      expect(result.status).toEqual(PaymentSessionStatus.PENDING_AUTHORIZATION)
-      expect(result.data).toEqual(expect.objectContaining({ replaceable: true }))
-    })
-
-    it("skips the replace-by-fee lookup when 0 confirmations aren't accepted", async () => {
-      const { provider, client } = buildProvider(
-        { confirmations: 1 },
-        buildClient({ pending: [{ txid: "tx", value: 100_000, status: 0 }] })
-      )
-
-      await provider.getPaymentStatus({ data: sessionData() })
-
-      expect(client.isReplaceable).not.toHaveBeenCalled()
-    })
-
-    it("counts what was received, not what the address still holds", async () => {
-      const { provider } = buildProvider(
-        {},
-        buildClient({
-          history: [
-            { txid: "spend", value: -100_000 },
-            { txid: "tx", value: 100_000 },
-          ],
-        })
-      )
-
-      const result = await provider.capturePayment({ data: sessionData() })
-
-      expect(result.data).toEqual(
-        expect.objectContaining({ received_satoshis: 100_000 })
-      )
-    })
-
-    it("drops a reported transaction the chain no longer has", async () => {
-      const { provider } = buildProvider({}, buildClient())
+    it("is paid once the follow-up address for the remainder settles", async () => {
+      const { provider } = buildProvider()
 
       const result = await provider.getPaymentStatus({
-        data: sessionData({
-          transactions: { replaced: { satoshis: 100_000, status: 0 } },
-        }),
+        data: sessionData([
+          settled({ paid_satoshis: 40_000, paid_fiat: 40 }),
+          settled({
+            address: NEXT_ADDRESS,
+            expected_fiat: 60,
+            expected_satoshis: 50_000,
+            btc_price: 120_000,
+            paid_satoshis: 50_000,
+            paid_fiat: 60,
+            txid: "tx2",
+          }),
+        ]),
       })
 
-      expect(result.status).toEqual(PaymentSessionStatus.PENDING)
+      expect(result.status).toEqual(PaymentSessionStatus.CAPTURED)
       expect(result.data).toEqual(
-        expect.objectContaining({ received_satoshis: 0, transactions: {} })
+        expect.objectContaining({ paid_fiat: 100, address: NEXT_ADDRESS })
       )
     })
   })
 
   describe("updatePayment", () => {
     it("re-quotes an expired price lock when nothing has been received", async () => {
-      const client = buildClient()
-      client.getPrice.mockResolvedValue(50_000)
-      const { provider } = buildProvider({}, client)
+      const { provider, client } = buildProvider({}, buildClient({ price: 125_000 }))
 
       const result = await provider.updatePayment({
         amount: 100,
         currency_code: "usd",
-        data: sessionData({ price_locked_until: Date.now() - 1_000 }),
+        data: sessionData([payment({ price_locked_until: Date.now() - 1 })]),
       })
 
+      expect(client.newAddress).not.toHaveBeenCalled()
+      expect(result.status).toEqual(PaymentSessionStatus.PENDING)
       expect(result.data).toEqual(
         expect.objectContaining({
           address: ADDRESS,
-          btc_price: 50_000,
-          expected_satoshis: 200_000,
+          btc_price: 125_000,
+          expected_satoshis: 80_000,
         })
       )
+      expect(
+        (result.data as BlockonomicsPaymentData).price_locked_until
+      ).toBeGreaterThan(Date.now())
     })
 
-    it("keeps the original quote once the customer has started paying", async () => {
-      const client = buildClient({
-        pending: [{ txid: "tx", value: 50_000, status: 0 }],
-      })
-      const { provider } = buildProvider({}, client)
+    it("keeps a valid quote as it is", async () => {
+      const { provider, client } = buildProvider({}, buildClient({ price: 125_000 }))
+      const data = sessionData()
 
       const result = await provider.updatePayment({
         amount: 100,
         currency_code: "usd",
-        data: sessionData({ price_locked_until: Date.now() - 1_000 }),
+        data,
       })
 
       expect(client.getPrice).not.toHaveBeenCalled()
       expect(result.data).toEqual(
-        expect.objectContaining({ expected_satoshis: 100_000 })
+        expect.objectContaining({
+          expected_satoshis: 100_000,
+          price_locked_until: data.price_locked_until,
+        })
       )
     })
 
-    it("re-quotes a changed total even once the customer has started paying", async () => {
-      const client = buildClient({
-        pending: [{ txid: "tx", value: 100_000, status: 0 }],
-      })
-      const { provider } = buildProvider({ confirmations: 0 }, client)
+    it("re-quotes a changed total on the same address", async () => {
+      const { provider } = buildProvider()
 
       const result = await provider.updatePayment({
         amount: 150,
@@ -379,15 +327,101 @@ describe("BlockonomicsProviderService", () => {
         data: sessionData(),
       })
 
-      expect(client.getPrice).toHaveBeenCalledWith("usd")
+      expect(result.data).toEqual(
+        expect.objectContaining({
+          address: ADDRESS,
+          fiat_amount: 150,
+          expected_fiat: 150,
+          expected_satoshis: 150_000,
+        })
+      )
+    })
+
+    it("leaves a payment in progress alone, even once the lock expired", async () => {
+      const { provider, client } = buildProvider({}, buildClient({ price: 125_000 }))
+      const data = sessionData([
+        payment({
+          payment_status: BlockonomicsPaymentStatus.IN_PROGRESS,
+          txid: "tx",
+          price_locked_until: Date.now() - 1,
+        }),
+      ])
+
+      const result = await provider.updatePayment({
+        amount: 100,
+        currency_code: "usd",
+        data,
+      })
+
+      expect(client.getPrice).not.toHaveBeenCalled()
+      expect(result.status).toEqual(PaymentSessionStatus.PENDING_AUTHORIZATION)
+      expect(result.data).toEqual(
+        expect.objectContaining({ expected_satoshis: 100_000 })
+      )
+    })
+
+    it("quotes the remainder of a settled underpayment on a new address at the current rate", async () => {
+      const { provider, client } = buildProvider({}, buildClient({ price: 120_000 }))
+      client.newAddress.mockReset().mockResolvedValue(NEXT_ADDRESS)
+
+      const result = await provider.updatePayment({
+        amount: 100,
+        currency_code: "usd",
+        data: sessionData([settled({ paid_satoshis: 40_000, paid_fiat: 40 })]),
+      })
+
+      expect(client.newAddress).toHaveBeenCalledTimes(1)
       expect(result.status).toEqual(PaymentSessionStatus.PENDING_AUTHORIZATION)
       expect(result.data).toEqual(
         expect.objectContaining({
-          fiat_amount: 150,
-          expected_satoshis: 150_000,
-          received_satoshis: 100_000,
+          address: NEXT_ADDRESS,
+          paid_fiat: 40,
+          expected_fiat: 60,
+          btc_price: 120_000,
+          expected_satoshis: 50_000,
+          payment_status: BlockonomicsPaymentStatus.NEW,
+          underpaid: true,
         })
       )
+      const { payments } = result.data as BlockonomicsPaymentData
+      expect(payments).toHaveLength(2)
+      expect(payments[0]).toEqual(
+        expect.objectContaining({ address: ADDRESS, paid_fiat: 40 })
+      )
+    })
+
+    it("does not hand out another address while the remainder is unpaid", async () => {
+      const { provider, client } = buildProvider()
+
+      const result = await provider.updatePayment({
+        amount: 100,
+        currency_code: "usd",
+        data: sessionData([
+          settled({ paid_satoshis: 40_000, paid_fiat: 40 }),
+          payment({
+            address: NEXT_ADDRESS,
+            expected_fiat: 60,
+            expected_satoshis: 60_000,
+          }),
+        ]),
+      })
+
+      expect(client.newAddress).not.toHaveBeenCalled()
+      expect((result.data as BlockonomicsPaymentData).payments).toHaveLength(2)
+    })
+
+    it("does not touch a paid session", async () => {
+      const { provider, client } = buildProvider()
+
+      const result = await provider.updatePayment({
+        amount: 100,
+        currency_code: "usd",
+        data: sessionData([settled()]),
+      })
+
+      expect(client.newAddress).not.toHaveBeenCalled()
+      expect(client.getPrice).not.toHaveBeenCalled()
+      expect(result.status).toEqual(PaymentSessionStatus.CAPTURED)
     })
   })
 
@@ -397,22 +431,31 @@ describe("BlockonomicsProviderService", () => {
 
       await expect(
         provider.refundPayment({ amount: 100, data: sessionData() })
-      ).rejects.toThrow(/cannot be refunded through Blockonomics/)
+      ).rejects.toThrow(/cannot be refunded/)
     })
   })
 
   describe("capturePayment", () => {
-    it("refuses to capture an underpaid address", async () => {
-      const { provider } = buildProvider(
-        {},
-        buildClient({
-          pending: [{ txid: "tx", value: 10_000, status: 0 }],
-        })
-      )
+    it("refuses to capture an underpaid session", async () => {
+      const { provider } = buildProvider()
 
       await expect(
-        provider.capturePayment({ data: sessionData() })
-      ).rejects.toThrow(/10000 of 100000 satoshis received/)
+        provider.capturePayment({
+          data: sessionData([settled({ paid_satoshis: 40_000, paid_fiat: 40 })]),
+        })
+      ).rejects.toThrow(/Cannot capture/)
+    })
+
+    it("records the capture of a paid session", async () => {
+      const { provider } = buildProvider()
+
+      const result = await provider.capturePayment({
+        data: sessionData([settled()]),
+      })
+
+      expect((result.data as BlockonomicsPaymentData).captured_at).toEqual(
+        expect.any(Number)
+      )
     })
   })
 
@@ -430,17 +473,24 @@ describe("BlockonomicsProviderService", () => {
       headers: {},
     })
 
-    beforeEach(() => {
+    const openSession = (data = sessionData()) => {
       container.paymentSessionService.list.mockResolvedValue([
-        { id: "payses_1", data: sessionData() },
+        { id: "payses_1", data },
       ])
+    }
+
+    const persisted = (): BlockonomicsPaymentData =>
+      container.paymentSessionService.update.mock.calls.at(-1)[0].data
+
+    beforeEach(() => {
+      openSession()
     })
 
     it("ignores a callback carrying the wrong secret", async () => {
       const { provider } = buildProvider()
 
       const result = await provider.getWebhookActionAndData(
-        callback({ secret: "not-the-secret" })
+        callback({ secret: "wrong" })
       )
 
       expect(result.action).toEqual(PaymentActions.NOT_SUPPORTED)
@@ -458,167 +508,133 @@ describe("BlockonomicsProviderService", () => {
     })
 
     it("ignores an address that belongs to no open session", async () => {
-      container.paymentSessionService.list.mockResolvedValue([])
       const { provider } = buildProvider()
+      container.paymentSessionService.list.mockResolvedValue([])
 
       const result = await provider.getWebhookActionAndData(callback())
 
       expect(result.action).toEqual(PaymentActions.NOT_SUPPORTED)
     })
 
-    it("captures a fully confirmed payment", async () => {
-      const { provider } = buildProvider(
-        {},
-        buildClient({
-          history: [{ txid: "tx", value: 100_000 }],
+    it("marks the address paid-in-progress below the required confirmations", async () => {
+      const { provider } = buildProvider()
+
+      const result = await provider.getWebhookActionAndData(
+        callback({ status: 0 })
+      )
+
+      expect(result.action).toEqual(PaymentActions.PENDING_AUTHORIZATION)
+      expect(persisted()).toEqual(
+        expect.objectContaining({
+          payment_status: BlockonomicsPaymentStatus.IN_PROGRESS,
+          confirmations: 0,
+          txid: "tx",
+          paid_fiat: 0,
         })
       )
+    })
+
+    it("settles the address at the required confirmations and completes the payment", async () => {
+      const { provider } = buildProvider()
 
       const result = await provider.getWebhookActionAndData(callback())
 
-      expect(result.action).toEqual(PaymentActions.SUCCESSFUL)
-      expect(result.data).toEqual({ session_id: "payses_1", amount: 100 })
-    })
-
-    it("authorizes at the merchant's threshold before the payment is final", async () => {
-      const { provider } = buildProvider(
-        { confirmations: 1 },
-        buildClient({
-          pending: [{ txid: "tx", value: 100_000, status: 1 }],
+      expect(result).toEqual({
+        action: PaymentActions.SUCCESSFUL,
+        data: { session_id: "payses_1", amount: 100 },
+      })
+      expect(persisted()).toEqual(
+        expect.objectContaining({
+          payment_status: BlockonomicsPaymentStatus.SETTLED,
+          paid_satoshis: 100_000,
+          paid_fiat: 100,
         })
       )
+    })
+
+    it("settles at a lower threshold when the merchant accepts one", async () => {
+      const { provider } = buildProvider({ confirmations: 0 })
 
       const result = await provider.getWebhookActionAndData(
-        callback({ status: 1 })
+        callback({ status: 0 })
       )
 
-      expect(result.action).toEqual(PaymentActions.AUTHORIZED)
+      expect(result.action).toEqual(PaymentActions.SUCCESSFUL)
     })
 
-    it("does not settle an unconfirmed replace-by-fee transaction", async () => {
-      const { provider } = buildProvider(
-        { confirmations: 0 },
-        buildClient({
-          pending: [{ txid: "tx", value: 100_000, status: 0 }],
-        })
-      )
+    it("only records the transaction id of an unconfirmed replace-by-fee payment", async () => {
+      const { provider } = buildProvider({ confirmations: 0 })
 
       const result = await provider.getWebhookActionAndData(
         callback({ status: 0, rbf: 1 })
       )
 
       expect(result.action).toEqual(PaymentActions.PENDING_AUTHORIZATION)
-    })
-
-    it("settles a test-mode payment from the callback alone", async () => {
-      const { provider } = buildProvider({}, buildUnobservableClient())
-
-      const result = await provider.getWebhookActionAndData(callback())
-
-      expect(result.action).toEqual(PaymentActions.SUCCESSFUL)
-      expect(container.paymentSessionService.update).toHaveBeenCalledWith(
+      expect(persisted()).toEqual(
         expect.objectContaining({
-          id: "payses_1",
-          data: expect.objectContaining({
-            received_satoshis: 100_000,
-            confirmations: 2,
-          }),
+          payment_status: BlockonomicsPaymentStatus.NEW,
+          txid: "tx",
         })
       )
     })
 
-    it("adds up several callbacks against an address that is not observable", async () => {
-      const { provider } = buildProvider({}, buildUnobservableClient())
-
-      const first = await provider.getWebhookActionAndData(
-        callback({ status: 2, value: 60_000, txid: "tx-a" })
-      )
-      expect(first.action).toEqual(PaymentActions.PENDING_AUTHORIZATION)
-
-      // The session now carries what the first callback reported.
-      const afterFirst =
-        container.paymentSessionService.update.mock.calls.at(-1)[0].data
-      container.paymentSessionService.list.mockResolvedValue([
-        { id: "payses_1", data: afterFirst },
-      ])
-
-      const second = await provider.getWebhookActionAndData(
-        callback({ status: 2, value: 40_000, txid: "tx-b" })
-      )
-
-      expect(second.action).toEqual(PaymentActions.SUCCESSFUL)
-    })
-
-    it("captures an authorized session once the payment is final", async () => {
-      container.paymentSessionService.list.mockResolvedValue([
-        { id: "payses_1", data: sessionData({ confirmations: 1 }) },
-      ])
-      const { provider } = buildProvider(
-        { confirmations: 1 },
-        buildClient({ history: [{ txid: "tx", value: 100_000 }] })
-      )
-
-      const result = await provider.getWebhookActionAndData(callback())
-
-      expect(container.paymentSessionService.list).toHaveBeenCalledWith(
-        {
-          status: expect.arrayContaining([PaymentSessionStatus.AUTHORIZED]),
-          data: { address: ADDRESS },
-        },
-        expect.anything()
-      )
-      expect(result.action).toEqual(PaymentActions.SUCCESSFUL)
-    })
-
-    it("does not count a fee-bumped transaction twice", async () => {
-      container.paymentSessionService.list.mockResolvedValue([
-        {
-          id: "payses_1",
-          data: sessionData({
-            transactions: { original: { satoshis: 60_000, status: 0 } },
-          }),
-        },
-      ])
-      const { provider } = buildProvider(
-        {},
-        buildClient({
-          history: [{ txid: "replacement", value: 60_000 }],
-        })
-      )
+    it("values a settled underpayment at the rate it was quoted at", async () => {
+      const { provider } = buildProvider()
 
       const result = await provider.getWebhookActionAndData(
-        callback({ txid: "replacement", value: 60_000 })
+        callback({ value: 40_000 })
       )
 
       expect(result.action).toEqual(PaymentActions.PENDING_AUTHORIZATION)
-      expect(container.paymentSessionService.update).toHaveBeenCalledWith(
+      expect(persisted()).toEqual(
         expect.objectContaining({
-          data: expect.objectContaining({ received_satoshis: 60_000 }),
+          payment_status: BlockonomicsPaymentStatus.SETTLED,
+          paid_satoshis: 40_000,
+          paid_fiat: 40,
+          underpaid: true,
         })
       )
     })
 
-    it("uses the callback's transaction until the history lists it", async () => {
-      const { provider } = buildProvider({}, buildClient())
-
-      const result = await provider.getWebhookActionAndData(callback())
-
-      expect(result.action).toEqual(PaymentActions.SUCCESSFUL)
-    })
-
-    it("waits for the rest of a partial payment", async () => {
-      const { provider } = buildProvider(
-        { confirmations: 0 },
-        buildClient({
-          pending: [{ txid: "tx", value: 60_000, status: 0 }],
-        })
-      )
+    it("ignores further callbacks for a settled address", async () => {
+      const { provider } = buildProvider()
+      openSession(sessionData([settled({ paid_satoshis: 40_000, paid_fiat: 40 })]))
 
       const result = await provider.getWebhookActionAndData(
-        callback({ status: 0, value: 60_000 })
+        callback({ value: 100_000, txid: "tx-late" })
       )
 
       expect(result.action).toEqual(PaymentActions.PENDING_AUTHORIZATION)
+      expect(persisted()).toEqual(
+        expect.objectContaining({ paid_satoshis: 40_000, txid: "tx" })
+      )
+    })
+
+    it("completes the payment once the follow-up address settles", async () => {
+      const { provider } = buildProvider()
+      openSession(
+        sessionData([
+          settled({ paid_satoshis: 40_000, paid_fiat: 40 }),
+          payment({
+            address: NEXT_ADDRESS,
+            expected_fiat: 60,
+            expected_satoshis: 50_000,
+            btc_price: 120_000,
+          }),
+        ])
+      )
+
+      const result = await provider.getWebhookActionAndData(
+        callback({ addr: NEXT_ADDRESS, value: 50_000, txid: "tx2" })
+      )
+
+      expect(result.action).toEqual(PaymentActions.SUCCESSFUL)
+      expect(persisted()).toEqual(
+        expect.objectContaining({ paid_fiat: 100, underpaid: true })
+      )
+      expect(persisted().payments[1]).toEqual(
+        expect.objectContaining({ paid_satoshis: 50_000, paid_fiat: 60 })
+      )
     })
   })
 })

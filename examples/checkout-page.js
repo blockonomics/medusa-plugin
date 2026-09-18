@@ -7,8 +7,9 @@
  *     re-quoted through the plugin's store route, keeping the address
  *   - the Blockonomics WebSocket drives the page: the first message switches
  *     to the receipt screen, later ones advance the confirmation count
- *   - an underpayment offers "Pay remaining", which returns to the payment
- *     screen with the outstanding amount
+ *   - an underpayment shows what was paid and what is left, in fiat; once it
+ *     confirms, the remainder is quoted on a fresh address at the current
+ *     rate and "Pay remaining" returns to the payment screen for it
  *
  * Fulfilment stays with the callbacks: the order is placed server-side once
  * the configured confirmations arrive, and the receipt screen picks it up.
@@ -213,7 +214,9 @@ const page = (publishableKey) => `<!doctype html>
       </div>
       <div id="underpaid" class="hidden">
         <p class="warn">Order was underpaid by <strong id="due"></strong>.</p>
-        <button class="btn" id="pay-remaining" type="button">Pay remaining</button>
+        <p id="underpaid-conf"></p>
+        <p id="underpaid-wait">The remaining amount can be paid once this payment has confirmed. You can leave this page open.</p>
+        <button class="btn hidden" id="pay-remaining" type="button">Pay remaining</button>
       </div>
     </div>
 
@@ -239,10 +242,6 @@ const page = (publishableKey) => `<!doctype html>
   let wsAttempt = 0
   let wsClosed = false
   let orderPoll = null
-  // Payments the socket has reported, by txid. The session's own count only
-  // moves once the callback has been processed, a few seconds later.
-  const seen = {}
-  const seenSats = () => Object.values(seen).reduce((a, b) => a + b, 0)
 
   // ---- Data -------------------------------------------------------------
 
@@ -260,7 +259,8 @@ const page = (publishableKey) => `<!doctype html>
       s.provider_id.startsWith("pp_blockonomics")
     )
 
-  // Re-quotes the amount through the plugin's store route. The address stays.
+  // The plugin's price refresh: re-quotes the active address, or hands out the
+  // next one once a settled underpayment leaves a remainder.
   const requote = async () => {
     const res = await fetch(
       MEDUSA + "/store/blockonomics/payment-sessions/" + session.id,
@@ -274,27 +274,25 @@ const page = (publishableKey) => `<!doctype html>
 
   // ---- Payment screen ---------------------------------------------------
 
-  const outstanding = () => {
-    const d = session.data
-    const received = Math.max(d.received_satoshis ?? 0, seenSats())
-    return Math.max(d.expected_satoshis - received, 0)
-  }
+  const fiat = (amount) =>
+    Number(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) +
+    " " + String(session.data.currency_code).toUpperCase()
 
   const renderPayment = () => {
     const d = session.data
     const currency = String(d.currency_code).toUpperCase()
-    const amount = btc(outstanding())
+    const amount = btc(d.expected_satoshis)
     const uri = "bitcoin:" + d.address + "?amount=" + amount
 
     $("cart-label").textContent = "Cart " + CART_ID.slice(-6).toUpperCase()
-    $("cart-total").textContent =
-      Number(cart.total).toLocaleString(undefined, { minimumFractionDigits: 2 }) + " " + currency
+    $("cart-total").textContent = fiat(d.fiat_amount)
 
-    const received = Math.max(d.received_satoshis ?? 0, seenSats())
-    if (received > 0) {
+    // Settled underpayments are carried in fiat, valued at the rate they were
+    // quoted at; the remainder is what this address is quoted for.
+    if (d.paid_fiat > 0) {
       $("paid-rows").classList.remove("hidden")
-      $("paid-btc").textContent = btc(received) + " BTC"
-      $("remaining-btc").textContent = amount + " BTC"
+      $("paid-btc").textContent = fiat(d.paid_fiat)
+      $("remaining-btc").textContent = fiat(d.expected_fiat)
     } else {
       $("paid-rows").classList.add("hidden")
     }
@@ -344,19 +342,24 @@ const page = (publishableKey) => `<!doctype html>
 
   // ---- Receipt screen ---------------------------------------------------
 
-  const showReceipt = (payment) => {
-    seen[payment.txid] = payment.value
-    const due = outstanding()
+  const showReceipt = async (payment) => {
+    const d = session.data
 
     $("payment").classList.add("hidden")
     $("receipt").classList.remove("hidden")
     $("txid").textContent = payment.txid
     $("txid").title = payment.txid
 
-    if (due > 0) {
+    if (payment.value < d.expected_satoshis) {
+      // Short. The shortfall is worth what it was quoted at. The remainder can
+      // only be paid once this payment settles and the plugin hands out the
+      // next address, so the button waits for that.
+      const dueFiat = d.expected_fiat * (1 - payment.value / d.expected_satoshis)
       $("settled").classList.add("hidden")
       $("underpaid").classList.remove("hidden")
-      $("due").textContent = btc(due) + " BTC"
+      $("due").textContent = fiat(dueFiat)
+      renderConfirmations(payment.status, "underpaid-conf")
+      await offerRemainder()
       return
     }
 
@@ -365,12 +368,27 @@ const page = (publishableKey) => `<!doctype html>
     renderConfirmations(payment.status)
   }
 
-  const renderConfirmations = (status) => {
+  // Asks the plugin for the next address. Until the underpayment has settled
+  // there is none, and the customer is asked to wait.
+  const offerRemainder = async () => {
+    const before = session.data.address
+    try {
+      await requote()
+    } catch {}
+    const ready = session.data.address !== before && session.data.payment_status === 0
+    $("pay-remaining").classList.toggle("hidden", !ready)
+    $("underpaid-wait").classList.toggle("hidden", ready)
+    if (ready) {
+      $("pay-remaining").textContent = "Pay remaining " + fiat(session.data.expected_fiat)
+    }
+  }
+
+  const renderConfirmations = (status, textId = "conf-text") => {
     ;[0, 1, 2].forEach((i) => {
       const el = $("c" + i)
       el.className = status >= i ? (i === FINAL_CONFIRMATIONS ? "done" : "on") : ""
     })
-    $("conf-text").textContent =
+    $(textId).textContent =
       status >= FINAL_CONFIRMATIONS
         ? "Payment confirmed"
         : status === 1
@@ -398,10 +416,6 @@ const page = (publishableKey) => `<!doctype html>
 
   $("pay-remaining").addEventListener("click", async () => {
     try {
-      // The session's data carries what has arrived so far after the callback;
-      // re-quote so the remaining amount is shown at the current rate.
-      await fetchCart()
-      session = findSession() ?? session
       await requote()
       $("receipt").classList.add("hidden")
       $("payment").classList.remove("hidden")
@@ -428,7 +442,9 @@ const page = (publishableKey) => `<!doctype html>
         if (payment.status >= FINAL_CONFIRMATIONS) {
           wsClosed = true
           ws.close()
-          watchOrder()
+          if (payment.value >= session.data.expected_satoshis) {
+            watchOrder()
+          }
         }
       }
       ws.onclose = () => {
@@ -464,6 +480,12 @@ const page = (publishableKey) => `<!doctype html>
       if (box) {
         box.classList.add("is-copied")
         setTimeout(() => box.classList.remove("is-copied"), 1500)
+      } else {
+        // Bare icon (txid on the receipt): swap it for the check mark briefly.
+        const icon = button.innerHTML
+        button.innerHTML = ${JSON.stringify(CHECK_ICON)}
+        button.style.color = "var(--ok)"
+        setTimeout(() => { button.innerHTML = icon; button.style.color = "" }, 1500)
       }
     })
   })
@@ -488,6 +510,20 @@ const page = (publishableKey) => `<!doctype html>
         $("receipt").classList.remove("hidden")
         renderConfirmations(FINAL_CONFIRMATIONS)
         watchOrder()
+        return
+      }
+
+      // Reloaded mid-payment: the active address already has a payment on it,
+      // so the receipt is shown from what the callbacks recorded. The socket
+      // catches up on the payment's state when it connects.
+      const d = session.data
+      if (d.payment_status !== 0) {
+        await showReceipt({
+          txid: d.txid,
+          status: d.confirmations,
+          value: d.payment_status === 2 ? d.paid_satoshis : d.expected_satoshis,
+        })
+        connectSocket()
         return
       }
 

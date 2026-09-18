@@ -19,11 +19,11 @@ export interface BlockonomicsOptions {
   callbackSecret: string
 
   /**
-   * Number of on-chain confirmations required before the payment is authorized
-   * and the order is placed. `0` accepts a payment as soon as it is seen in the
-   * mempool, which is only safe for low-value or reversible fulfilment.
-   *
-   * Capture always happens at `2` confirmations, which Blockonomics treats as final.
+   * Number of on-chain confirmations a callback has to report before the
+   * payment is taken as settled: the amount is recorded, and the order is
+   * placed and captured if it covers what was asked. `0` settles a payment as
+   * soon as it is seen in the mempool, which is only safe for low-value or
+   * reversible fulfilment.
    *
    * @defaultValue 2
    */
@@ -70,72 +70,120 @@ export interface BlockonomicsOptions {
 }
 
 /**
- * Shape of the data stored on the payment session and payment.
+ * State of one address handed out for a payment session. Mirrors a row of the
+ * Blockonomics WooCommerce plugin's payments table.
  */
-export interface BlockonomicsPaymentData extends Record<string, unknown> {
+export enum BlockonomicsPaymentStatus {
   /**
-   * The Bitcoin address generated for this payment session.
+   * Address handed out, nothing seen yet. The amount can still be re-quoted.
+   */
+  NEW = 0,
+  /**
+   * A callback has reported a payment below the required confirmations. The
+   * amount is frozen until it settles.
+   */
+  IN_PROGRESS = 1,
+  /**
+   * A callback reached the required confirmations. What it paid is recorded
+   * in `paid_satoshis` and `paid_fiat`, and never changes again.
+   */
+  SETTLED = 2,
+}
+
+export interface BlockonomicsPayment {
+  /**
+   * The Bitcoin address this payment goes to.
    */
   address: string
 
   /**
-   * The Medusa payment session this address belongs to. Blockonomics has no
-   * per-order metadata field, so the mapping is kept on our side.
+   * Fiat this address was quoted for: the order total, less what earlier
+   * addresses of the session settled.
    */
-  session_id?: string
+  expected_fiat: number
 
   /**
-   * The fiat amount and currency the quote was derived from.
-   */
-  fiat_amount: number
-  currency_code: string
-
-  /**
-   * Price of 1 BTC in `currency_code` at the time of the quote.
-   */
-  btc_price: number
-
-  /**
-   * Amount the customer has to send, in satoshis.
+   * `expected_fiat` in satoshis at `btc_price`.
    */
   expected_satoshis: number
 
   /**
-   * Amount received so far, in satoshis, confirmed and unconfirmed.
+   * Price of 1 BTC in the session's currency at the time of the quote.
    */
-  received_satoshis: number
-
-  /**
-   * Confirmations the payment has as a whole: the highest count at which the
-   * transactions with at least that many confirmations add up to the expected
-   * amount. `0` while the amount is only reached in the mempool.
-   */
-  confirmations: number
-
-  /**
-   * Set when the expected amount is only reached by counting unconfirmed
-   * Replace-By-Fee transactions, which the sender can still replace.
-   */
-  replaceable?: boolean
+  btc_price: number
 
   /**
    * Epoch milliseconds at which the quoted amount stops being valid.
    */
   price_locked_until: number
 
+  payment_status: BlockonomicsPaymentStatus
+
+  /**
+   * Confirmations the latest callback reported, `0` to `2`.
+   */
+  confirmations: number
+
+  /**
+   * What the settling callback reported, in satoshis, and its worth in fiat at
+   * the rate this address was quoted at. `0` until settled.
+   */
+  paid_satoshis: number
+  paid_fiat: number
+
   /**
    * Transaction ID of the payment, once one has been seen.
    */
-  txid?: string | null
+  txid: string | null
+}
+
+/**
+ * Shape of the data stored on the payment session and payment.
+ */
+export interface BlockonomicsPaymentData extends Record<string, unknown> {
+  /**
+   * The Medusa payment session this data belongs to. Blockonomics has no
+   * per-order metadata field, so the mapping is kept on our side.
+   */
+  session_id?: string
 
   /**
-   * Transactions paying the address, keyed by transaction ID. Rebuilt from
-   * on-chain history on every check when the address is observable, so replaced
-   * or double-spent transactions drop out. Addresses handed out in test mode are
-   * placeholders that the history endpoint rejects, so for those this is the
-   * record of what the callbacks reported.
+   * The order total and currency.
    */
-  transactions?: Record<string, BlockonomicsReportedTransaction>
+  fiat_amount: number
+  currency_code: string
+
+  /**
+   * Every address handed out for this session, oldest first. The last one is
+   * the address the customer is asked to pay; earlier ones are settled
+   * underpayments.
+   */
+  payments: BlockonomicsPayment[]
+
+  /**
+   * Fiat settled so far, summed over `payments`.
+   */
+  paid_fiat: number
+
+  /**
+   * The active address and its quote, mirrored from the last of `payments`
+   * for storefronts.
+   */
+  address: string
+  expected_fiat: number
+  expected_satoshis: number
+  btc_price: number
+  price_locked_until: number
+  payment_status: BlockonomicsPaymentStatus
+  confirmations: number
+  paid_satoshis: number
+  txid: string | null
+
+  /**
+   * Set once a settled payment came in short. The storefront asks for the
+   * remainder on the next address.
+   */
+  underpaid?: boolean
 
   /**
    * Set when more than `overpaymentTolerance` was received.
@@ -161,28 +209,4 @@ export interface BlockonomicsCallbackPayload {
    * which the sender can still cancel.
    */
   rbf?: string | number
-}
-
-export interface BlockonomicsReportedTransaction {
-  satoshis: number
-  /**
-   * Confirmations, capped at `2`, which Blockonomics treats as final.
-   */
-  status: number
-  /**
-   * Whether the transaction opted into Replace-By-Fee. Unknown until checked.
-   */
-  rbf?: boolean
-}
-
-export interface BlockonomicsTransaction {
-  txid: string
-  value: number
-  status?: number
-  time?: number
-  /**
-   * Replace-By-Fee flag on unconfirmed transactions, when the indexer knows it:
-   * `0` none, `1` opted in, `2` inherited from an unconfirmed parent.
-   */
-  rbf?: number | string | null
 }

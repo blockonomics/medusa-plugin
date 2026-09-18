@@ -34,8 +34,9 @@ import {
 import {
   BlockonomicsCallbackPayload,
   BlockonomicsOptions,
+  BlockonomicsPayment,
   BlockonomicsPaymentData,
-  BlockonomicsReportedTransaction,
+  BlockonomicsPaymentStatus,
 } from "../types"
 import {
   BlockonomicsClient,
@@ -43,12 +44,6 @@ import {
   isOverpaid,
   isUnderpaid,
 } from "../utils"
-
-/**
- * Confirmation count Blockonomics treats as final. A payment is captured at
- * this point regardless of the merchant's authorization threshold.
- */
-const FINAL_CONFIRMATIONS = 2
 
 const DEFAULT_CONFIRMATIONS = 2
 const DEFAULT_PRICE_LOCK_SECONDS = 600
@@ -58,10 +53,13 @@ const DEFAULT_UNDERPAYMENT_TOLERANCE = 0
 const DEFAULT_OVERPAYMENT_TOLERANCE = 0.05
 
 /**
+ * Decimal places fiat amounts are kept to, matching what the store shows.
+ */
+const FIAT_DECIMALS = 2
+
+/**
  * Payment session statuses a callback can still move forward, used to narrow
- * the search when mapping a Bitcoin address back to a session. An authorized
- * session is included: with a threshold below final, the callback that reaches
- * final confirmations is what captures it.
+ * the search when mapping a Bitcoin address back to a session.
  */
 const OPEN_SESSION_STATUSES = [
   PaymentSessionStatus.PENDING,
@@ -74,6 +72,15 @@ type InjectedDependencies = {
   logger: Logger
 }
 
+/**
+ * Follows the payment model of the Blockonomics WooCommerce plugin. Every
+ * address handed out for a session is a payment row with its own fiat quote;
+ * the callback that reaches the configured confirmations settles the row and
+ * records what it paid, in satoshis and in fiat at the row's rate. When a
+ * settled row came in short, the remainder is quoted on a fresh address at the
+ * current rate, and the session is complete once the settled rows add up to
+ * the order total.
+ */
 abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOptions> {
   protected readonly options_: BlockonomicsOptions
   protected readonly logger_: Logger
@@ -160,39 +167,34 @@ abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOpti
     currency_code,
     data,
   }: InitiatePaymentInput): Promise<InitiatePaymentOutput> {
-    const fiatAmount = new BigNumber(amount).numeric
-    const address = await this.client_.newAddress({
-      matchCallback: this.options_.matchCallback,
-    })
-    const btcPrice = await this.client_.getPrice(currency_code)
+    const fiatAmount = roundFiat(new BigNumber(amount).numeric)
+    const payment = await this.newPayment_(fiatAmount, currency_code)
 
-    const sessionData: BlockonomicsPaymentData = {
-      address,
+    const sessionData = this.withActivePayment_({
       session_id: data?.session_id as string | undefined,
       fiat_amount: fiatAmount,
       currency_code,
-      btc_price: btcPrice,
-      expected_satoshis: fiatToSatoshis(fiatAmount, btcPrice),
-      received_satoshis: 0,
-      confirmations: 0,
-      price_locked_until: Date.now() + this.priceLockSeconds * 1000,
-      txid: null,
-    }
+      payments: [payment],
+    })
 
     return {
       // Blockonomics has no order object of its own - the address is what a
       // payment is identified by, in callbacks and in the dashboard alike.
-      id: address,
+      id: payment.address,
       data: sessionData,
       status: PaymentSessionStatus.PENDING,
     }
   }
 
   /**
-   * Re-quotes the BTC amount when the fiat amount or currency changed, or once
-   * the price lock has expired and nothing has been received yet. The address is
-   * kept: Blockonomics addresses never expire, and a customer who pays late must
-   * not end up paying an address we dropped.
+   * Brings the active address' quote up to date, the way the WooCommerce plugin
+   * does when its checkout page loads:
+   *
+   * - nothing seen yet: re-quote the outstanding fiat at the current rate once
+   *   the price lock has expired or the order total changed. The address stays.
+   * - payment in progress: leave it alone - the customer sent what was quoted.
+   * - settled short: hand out a new address for the remainder at the current
+   *   rate. The settled row stays as the record of the partial payment.
    */
   async updatePayment({
     amount,
@@ -200,46 +202,59 @@ abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOpti
     data,
   }: UpdatePaymentInput): Promise<UpdatePaymentOutput> {
     const sessionData = this.getSessionData_(data)
-    const fiatAmount = new BigNumber(amount).numeric
-    const reconciled = await this.reconcile_(sessionData)
+    const fiatAmount = roundFiat(new BigNumber(amount).numeric)
+    const payments = [...sessionData.payments]
+    const active = payments[payments.length - 1]
 
-    const amountChanged =
+    const totalChanged =
       fiatAmount !== sessionData.fiat_amount ||
       currency_code !== sessionData.currency_code
-    const quoteExpired = reconciled.price_locked_until <= Date.now()
+    const outstanding = roundFiat(fiatAmount - sumPaidFiat(payments))
 
-    // An expired lock alone doesn't re-quote a payment in progress - the customer
-    // sent what they were quoted. A changed amount always does, or the order
-    // would settle at the old total.
-    const requote =
-      amountChanged || (quoteExpired && reconciled.received_satoshis === 0)
+    let updated: BlockonomicsPaymentData
 
-    if (!requote) {
-      return {
-        data: reconciled,
-        status: this.getStatusFor_(reconciled),
+    if (active.payment_status === BlockonomicsPaymentStatus.NEW) {
+      const quoteExpired = active.price_locked_until <= Date.now()
+
+      if (totalChanged || quoteExpired) {
+        payments[payments.length - 1] = await this.quotePayment_(
+          active,
+          outstanding,
+          currency_code
+        )
       }
-    }
 
-    const btcPrice = await this.client_.getPrice(currency_code)
+      updated = this.withActivePayment_({
+        ...sessionData,
+        fiat_amount: fiatAmount,
+        currency_code,
+        payments,
+      })
+    } else if (
+      active.payment_status === BlockonomicsPaymentStatus.SETTLED &&
+      this.isShort_(active) &&
+      outstanding > 0
+    ) {
+      payments.push(await this.newPayment_(outstanding, currency_code))
 
-    const expectedSatoshis = fiatToSatoshis(fiatAmount, btcPrice)
-    const requoted: BlockonomicsPaymentData = {
-      ...reconciled,
-      ...this.settle_(
-        Object.values(reconciled.transactions ?? {}),
-        expectedSatoshis
-      ),
-      fiat_amount: fiatAmount,
-      currency_code,
-      btc_price: btcPrice,
-      expected_satoshis: expectedSatoshis,
-      price_locked_until: Date.now() + this.priceLockSeconds * 1000,
+      updated = this.withActivePayment_({
+        ...sessionData,
+        fiat_amount: fiatAmount,
+        currency_code,
+        payments,
+      })
+    } else {
+      updated = this.withActivePayment_({
+        ...sessionData,
+        fiat_amount: fiatAmount,
+        currency_code,
+        payments,
+      })
     }
 
     return {
-      data: requoted,
-      status: this.getStatusFor_(requoted),
+      data: updated,
+      status: this.getStatusFor_(updated),
     }
   }
 
@@ -252,51 +267,41 @@ abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOpti
   async getPaymentStatus({
     data,
   }: GetPaymentStatusInput): Promise<GetPaymentStatusOutput> {
-    const sessionData = this.getSessionData_(data)
-    const reconciled = await this.reconcile_(sessionData)
+    const sessionData = this.withActivePayment_(this.getSessionData_(data))
 
     return {
-      data: reconciled,
-      status: this.getStatusFor_(reconciled),
+      data: sessionData,
+      status: this.getStatusFor_(sessionData),
     }
   }
 
   async retrievePayment({
     data,
   }: RetrievePaymentInput): Promise<RetrievePaymentOutput> {
-    const sessionData = this.getSessionData_(data)
-
-    return { data: await this.reconcile_(sessionData) }
+    return { data: this.withActivePayment_(this.getSessionData_(data)) }
   }
 
   /**
    * Bitcoin arrives in the merchant's wallet directly, so there is nothing to
-   * settle with the provider. Capturing records that the payment reached the
-   * confirmation count Blockonomics considers final.
+   * settle with the provider. Capturing records that the settled payments
+   * cover the order.
    */
   async capturePayment({
     data,
   }: CapturePaymentInput): Promise<CapturePaymentOutput> {
-    const sessionData = this.getSessionData_(data)
-    const reconciled = await this.reconcile_(sessionData)
+    const sessionData = this.withActivePayment_(this.getSessionData_(data))
 
-    if (
-      isUnderpaid(
-        reconciled.received_satoshis,
-        reconciled.expected_satoshis,
-        this.underpaymentTolerance
-      )
-    ) {
+    if (!this.isPaid_(sessionData)) {
       throw new MedusaError(
         MedusaError.Types.NOT_ALLOWED,
-        `Cannot capture ${reconciled.address}: ${reconciled.received_satoshis} of ${reconciled.expected_satoshis} satoshis received`
+        `Cannot capture ${sessionData.address}: ${sessionData.paid_fiat} of ${sessionData.fiat_amount} ${sessionData.currency_code} settled`
       )
     }
 
     return {
       data: {
-        ...reconciled,
-        captured_at: reconciled.captured_at ?? Date.now(),
+        ...sessionData,
+        captured_at: sessionData.captured_at ?? Date.now(),
       },
     }
   }
@@ -338,6 +343,13 @@ abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOpti
     return await this.cancelPayment(input)
   }
 
+  /**
+   * Processes a callback the way the WooCommerce plugin does: an unconfirmed
+   * Replace-By-Fee transaction only has its id recorded, since the sender can
+   * still cancel it; anything below the required confirmations marks the
+   * address as paid-in-progress; reaching them settles the address with what
+   * the callback reported. A settled address ignores further callbacks.
+   */
   async getWebhookActionAndData({
     data,
   }: ProviderWebhookPayload["payload"]): Promise<WebhookActionResult> {
@@ -371,34 +383,26 @@ abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOpti
     }
 
     const sessionData = this.getSessionData_(session.data)
-    const satoshis = this.parseNumber_(payload.value)
-    const reconciled = await this.reconcile_(
-      sessionData,
-      payload.txid && satoshis !== undefined
-        ? {
-            txid: payload.txid,
-            satoshis,
-            status: this.parseNumber_(payload.status) ?? 0,
-            // Only sent on unconfirmed transactions that opted into
-            // Replace-By-Fee, so its absence doesn't rule RBF out.
-            rbf: payload.rbf !== undefined ? true : undefined,
-          }
-        : undefined
+    const payments = sessionData.payments.map((payment) =>
+      payment.address === address
+        ? this.applyCallback_(payment, payload)
+        : payment
     )
+
+    const updated = this.withActivePayment_({ ...sessionData, payments })
 
     // Only the action and the session id travel back to the payment module, so
     // what the callback reported is written to the session here. Without it, the
     // authorization that follows would re-read a session that has no record of
-    // this transaction - which is all there is to go on for an address that
-    // isn't observable on-chain.
-    await this.persistSessionData_(session.id, reconciled)
+    // this payment.
+    await this.persistSessionData_(session.id, updated)
 
     const webhookData = {
       session_id: session.id,
-      amount: reconciled.fiat_amount,
+      amount: updated.fiat_amount,
     }
 
-    switch (this.getStatusFor_(reconciled)) {
+    switch (this.getStatusFor_(updated)) {
       case PaymentSessionStatus.CAPTURED:
         return { action: PaymentActions.SUCCESSFUL, data: webhookData }
       case PaymentSessionStatus.AUTHORIZED:
@@ -411,147 +415,159 @@ abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOpti
     }
   }
 
+  protected applyCallback_(
+    payment: BlockonomicsPayment,
+    payload: BlockonomicsCallbackPayload
+  ): BlockonomicsPayment {
+    const txid = payload.txid ?? payment.txid
+
+    if (payment.payment_status === BlockonomicsPaymentStatus.SETTLED) {
+      return payment
+    }
+
+    // Only sent on unconfirmed transactions that opted into Replace-By-Fee.
+    if (payload.rbf !== undefined) {
+      return { ...payment, txid }
+    }
+
+    const status = this.parseNumber_(payload.status) ?? 0
+    const satoshis = this.parseNumber_(payload.value) ?? 0
+
+    if (status < this.requiredConfirmations) {
+      return {
+        ...payment,
+        txid,
+        confirmations: status,
+        payment_status: BlockonomicsPaymentStatus.IN_PROGRESS,
+      }
+    }
+
+    return {
+      ...payment,
+      txid,
+      confirmations: status,
+      payment_status: BlockonomicsPaymentStatus.SETTLED,
+      paid_satoshis: satoshis,
+      // What the customer sent is worth what it was quoted at, whatever the
+      // rate has done since.
+      paid_fiat: roundFiat(
+        (payment.expected_fiat * satoshis) / payment.expected_satoshis
+      ),
+    }
+  }
+
+  protected async newPayment_(
+    fiatAmount: number,
+    currencyCode: string
+  ): Promise<BlockonomicsPayment> {
+    const address = await this.client_.newAddress({
+      matchCallback: this.options_.matchCallback,
+    })
+
+    return await this.quotePayment_(
+      {
+        address,
+        expected_fiat: fiatAmount,
+        expected_satoshis: 0,
+        btc_price: 0,
+        price_locked_until: 0,
+        payment_status: BlockonomicsPaymentStatus.NEW,
+        confirmations: 0,
+        paid_satoshis: 0,
+        paid_fiat: 0,
+        txid: null,
+      },
+      fiatAmount,
+      currencyCode
+    )
+  }
+
+  protected async quotePayment_(
+    payment: BlockonomicsPayment,
+    fiatAmount: number,
+    currencyCode: string
+  ): Promise<BlockonomicsPayment> {
+    const btcPrice = await this.client_.getPrice(currencyCode)
+
+    return {
+      ...payment,
+      expected_fiat: fiatAmount,
+      expected_satoshis: fiatToSatoshis(fiatAmount, btcPrice),
+      btc_price: btcPrice,
+      price_locked_until: Date.now() + this.priceLockSeconds * 1000,
+    }
+  }
+
   /**
-   * Works out which transactions pay the address and how settled they are.
-   *
-   * When the address is observable on-chain, its history is the source of truth
-   * and the transaction list is rebuilt from it on every check, so a transaction
-   * that was replaced or double-spent drops out rather than lingering. Only
-   * incoming transactions count - the merchant's wallet spending the coins later
-   * doesn't undo the payment. The transaction a callback reports is added if the
-   * history doesn't list it yet, covering indexing lag.
-   *
-   * An address handed out in test mode is not on-chain at all, so what the
-   * callbacks reported is all there is to go on.
+   * Mirrors the active payment onto the session data, so storefronts read the
+   * address and quote from the top level.
    */
-  protected async reconcile_(
-    sessionData: BlockonomicsPaymentData,
-    reported?: { txid: string } & BlockonomicsReportedTransaction
-  ): Promise<BlockonomicsPaymentData> {
-    const known = sessionData.transactions ?? {}
-    const history = await this.client_.getHistory(sessionData.address)
-
-    let transactions: Record<string, BlockonomicsReportedTransaction>
-
-    if (history) {
-      transactions = {}
-
-      for (const [tx, status] of [
-        ...history.pending.map((tx) => [tx, tx.status ?? 0] as const),
-        ...history.history.map((tx) => [tx, FINAL_CONFIRMATIONS] as const),
-      ]) {
-        if (tx.value > 0) {
-          transactions[tx.txid] = {
-            satoshis: tx.value,
-            status: Math.min(status, FINAL_CONFIRMATIONS),
-            rbf:
-              tx.rbf === undefined || tx.rbf === null
-                ? known[tx.txid]?.rbf
-                : Number(tx.rbf) > 0,
-          }
-        }
-      }
-    } else {
-      transactions = { ...known }
-    }
-
-    if (reported) {
-      const existing = transactions[reported.txid]
-
-      transactions[reported.txid] = {
-        // The chain's value wins; the callback's is only used until it shows up.
-        satoshis: existing?.satoshis ?? reported.satoshis,
-        status: Math.min(
-          Math.max(existing?.status ?? 0, reported.status),
-          FINAL_CONFIRMATIONS
-        ),
-        rbf: reported.rbf ?? existing?.rbf,
-      }
-    }
-
-    // RBF only matters for a transaction accepted at 0 confirmations, so the
-    // extra lookup is limited to merchants who accept those, and to transactions
-    // the history didn't already flag.
-    if (history && this.requiredConfirmations === 0) {
-      await Promise.all(
-        Object.entries(transactions)
-          .filter(([, tx]) => tx.status === 0 && tx.rbf === undefined)
-          .map(async ([txid, tx]) => {
-            tx.rbf = await this.client_.isReplaceable(txid)
-          })
-      )
-    }
-
-    const txid =
-      reported?.txid ??
-      history?.pending[0]?.txid ??
-      history?.history[0]?.txid ??
-      Object.keys(transactions)[0] ??
-      sessionData.txid ??
-      null
+  protected withActivePayment_(
+    sessionData: Pick<
+      BlockonomicsPaymentData,
+      "fiat_amount" | "currency_code" | "payments"
+    > &
+      Partial<BlockonomicsPaymentData>
+  ): BlockonomicsPaymentData {
+    const payments = sessionData.payments
+    const active = payments[payments.length - 1]
+    const settled = payments.filter(
+      (payment) => payment.payment_status === BlockonomicsPaymentStatus.SETTLED
+    )
 
     return {
       ...sessionData,
-      ...this.settle_(
-        Object.values(transactions),
-        sessionData.expected_satoshis
+      payments,
+      paid_fiat: sumPaidFiat(payments),
+      address: active.address,
+      expected_fiat: active.expected_fiat,
+      expected_satoshis: active.expected_satoshis,
+      btc_price: active.btc_price,
+      price_locked_until: active.price_locked_until,
+      payment_status: active.payment_status,
+      confirmations: active.confirmations,
+      paid_satoshis: active.paid_satoshis,
+      txid: active.txid,
+      underpaid: settled.some((payment) => this.isShort_(payment)),
+      overpaid: settled.some((payment) =>
+        isOverpaid(
+          payment.paid_satoshis,
+          payment.expected_satoshis,
+          this.overpaymentTolerance
+        )
       ),
-      transactions,
-      txid,
     }
   }
 
   /**
-   * Totals the transactions and works out how many confirmations the payment
-   * has as a whole. That is not the most-confirmed transaction: a small
-   * confirmed transaction alongside a large unconfirmed one is not a confirmed
-   * payment. It is the highest count at which the transactions with at least that
-   * many confirmations still cover the expected amount. Unconfirmed
-   * Replace-By-Fee transactions never count towards it.
+   * Whether a settled payment came in below what its address was quoted for,
+   * after the merchant's tolerance.
    */
-  protected settle_(
-    transactions: BlockonomicsReportedTransaction[],
-    expectedSatoshis: number
-  ): Pick<
-    BlockonomicsPaymentData,
-    "received_satoshis" | "confirmations" | "replaceable" | "overpaid"
-  > {
-    const sum = (txs: BlockonomicsReportedTransaction[]) =>
-      txs.reduce((total, tx) => total + tx.satoshis, 0)
-    const covers = (satoshis: number) =>
-      !isUnderpaid(satoshis, expectedSatoshis, this.underpaymentTolerance)
-
-    const receivedSatoshis = sum(transactions)
-
-    let confirmations: number | undefined
-
-    for (let count = FINAL_CONFIRMATIONS; count >= 0; count--) {
-      const counted = transactions.filter(
-        (tx) => tx.status >= count && !(tx.status === 0 && tx.rbf)
-      )
-
-      if (covers(sum(counted))) {
-        confirmations = count
-        break
-      }
-    }
-
-    return {
-      received_satoshis: receivedSatoshis,
-      confirmations: confirmations ?? 0,
-      replaceable: confirmations === undefined && covers(receivedSatoshis),
-      overpaid: isOverpaid(
-        receivedSatoshis,
-        expectedSatoshis,
-        this.overpaymentTolerance
-      ),
-    }
+  protected isShort_(payment: BlockonomicsPayment): boolean {
+    return isUnderpaid(
+      payment.paid_satoshis,
+      payment.expected_satoshis,
+      this.underpaymentTolerance
+    )
   }
 
   /**
-   * Maps the state of the address onto a payment session status. Anything short
-   * of a settled payment stays in `pending_authorization`: the customer may
-   * still send the remainder, and the address keeps accepting it.
+   * The order is paid once the last address settled in full: each address is
+   * quoted for whatever the earlier ones left outstanding.
+   */
+  protected isPaid_(sessionData: BlockonomicsPaymentData): boolean {
+    const active = sessionData.payments[sessionData.payments.length - 1]
+
+    return (
+      active.payment_status === BlockonomicsPaymentStatus.SETTLED &&
+      !this.isShort_(active)
+    )
+  }
+
+  /**
+   * Maps the session onto a payment session status. Anything short of a settled
+   * payment stays in `pending_authorization`: the customer may still send the
+   * remainder, and a settled shortfall gets a new address for it.
    */
   protected getStatusFor_(
     sessionData: BlockonomicsPaymentData
@@ -560,33 +576,17 @@ abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOpti
       return PaymentSessionStatus.CANCELED
     }
 
-    // Nothing has arrived: the session is waiting for the customer, not for
-    // the network, so a re-quote keeps it where `initiatePayment` left it.
-    if (!sessionData.received_satoshis) {
-      return PaymentSessionStatus.PENDING
-    }
-
-    if (
-      isUnderpaid(
-        sessionData.received_satoshis,
-        sessionData.expected_satoshis,
-        this.underpaymentTolerance
-      )
-    ) {
-      return PaymentSessionStatus.PENDING_AUTHORIZATION
-    }
-
-    // The sender can still replace the transactions that make up the amount.
-    if (sessionData.replaceable) {
-      return PaymentSessionStatus.PENDING_AUTHORIZATION
-    }
-
-    if (sessionData.confirmations >= FINAL_CONFIRMATIONS) {
+    if (this.isPaid_(sessionData)) {
       return PaymentSessionStatus.CAPTURED
     }
 
-    if (sessionData.confirmations >= this.requiredConfirmations) {
-      return PaymentSessionStatus.AUTHORIZED
+    const active = sessionData.payments[sessionData.payments.length - 1]
+
+    if (
+      active.payment_status === BlockonomicsPaymentStatus.NEW &&
+      sessionData.payments.length === 1
+    ) {
+      return PaymentSessionStatus.PENDING
     }
 
     return PaymentSessionStatus.PENDING_AUTHORIZATION
@@ -609,8 +609,9 @@ abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOpti
 
   /**
    * Blockonomics identifies a payment by its address and has no field to carry
-   * the Medusa session id back to us, so the session is looked up by the address
-   * stored on it when the callback arrives.
+   * the Medusa session id back to us, so the session is looked up by the
+   * address stored on it when the callback arrives. Only the active address is
+   * indexed; a settled address ignores callbacks anyway.
    */
   protected async findSessionByAddress_(
     address: string
@@ -650,8 +651,6 @@ abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOpti
     try {
       await paymentSessionService.update({ id: sessionId, data })
     } catch (error) {
-      // The payment can still be settled from the address' history on the next
-      // status check, so a failure to record the callback is not fatal.
       this.logger_.warn(
         `Could not record the Blockonomics callback on payment session ${sessionId}: ${error.message}`
       )
@@ -664,7 +663,7 @@ abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOpti
   ): BlockonomicsPaymentData {
     const sessionData = data as BlockonomicsPaymentData | undefined
 
-    if (!sessionData?.address) {
+    if (!sessionData?.payments?.length) {
       if (options.optional) {
         return undefined as unknown as BlockonomicsPaymentData
       }
@@ -683,6 +682,16 @@ abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOpti
 
     return Number.isFinite(parsed) ? parsed : undefined
   }
+}
+
+function roundFiat(amount: number): number {
+  return Number(amount.toFixed(FIAT_DECIMALS))
+}
+
+function sumPaidFiat(payments: BlockonomicsPayment[]): number {
+  return roundFiat(
+    payments.reduce((total, payment) => total + payment.paid_fiat, 0)
+  )
 }
 
 export default BlockonomicsBase
