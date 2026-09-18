@@ -560,6 +560,12 @@ abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOpti
       return PaymentSessionStatus.CANCELED
     }
 
+    // Nothing has arrived: the session is waiting for the customer, not for
+    // the network, so a re-quote keeps it where `initiatePayment` left it.
+    if (!sessionData.received_satoshis) {
+      return PaymentSessionStatus.PENDING
+    }
+
     if (
       isUnderpaid(
         sessionData.received_satoshis,

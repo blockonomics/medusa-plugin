@@ -149,6 +149,17 @@ describe("BlockonomicsProviderService", () => {
   })
 
   describe("getPaymentStatus", () => {
+    it("stays pending while nothing has arrived", async () => {
+      const { provider } = buildProvider({}, buildClient({}))
+
+      const result = await provider.getPaymentStatus({ data: sessionData() })
+
+      expect(result.status).toEqual(PaymentSessionStatus.PENDING)
+      expect(result.data).toEqual(
+        expect.objectContaining({ received_satoshis: 0 })
+      )
+    })
+
     it("stays pending while less than the expected amount has arrived", async () => {
       const { provider } = buildProvider(
         {},
@@ -310,7 +321,7 @@ describe("BlockonomicsProviderService", () => {
         }),
       })
 
-      expect(result.status).toEqual(PaymentSessionStatus.PENDING_AUTHORIZATION)
+      expect(result.status).toEqual(PaymentSessionStatus.PENDING)
       expect(result.data).toEqual(
         expect.objectContaining({ received_satoshis: 0, transactions: {} })
       )

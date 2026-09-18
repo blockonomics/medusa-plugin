@@ -161,7 +161,45 @@ The payment's confirmations are those of the transactions that make up the amoun
 
 With `confirmations: 0`, an unconfirmed transaction that opted into Replace-By-Fee is not accepted until it confirms, because the sender can still replace it.
 
-The storefront reads the address and amount to show the customer from the payment session's `data`: `address`, `expected_satoshis`, and `price_locked_until`.
+## Storefront
+
+There is no hosted payment page. The storefront shows the customer where to send Bitcoin, using the payment session's `data`:
+
+| Field | Description |
+| --- | --- |
+| `address` | Bitcoin address to pay. One per session, never reused. |
+| `expected_satoshis` | Amount to send, in satoshis. Divide by `1e8` for BTC. |
+| `received_satoshis` | Amount that has arrived so far. |
+| `btc_price` | Rate the amount was quoted at, in the cart's currency. |
+| `price_locked_until` | Unix milliseconds until the quote expires. |
+
+The flow the Blockonomics WooCommerce plugin uses, and what to build:
+
+1. Show a QR code of `bitcoin:{address}?amount={btc}`, an "Open in wallet" link to the same URI, and the address and amount as copyable fields.
+2. Count down to `price_locked_until`. When it runs out, re-quote through the plugin's store route below and update the amount, rate, and QR code. Do not create a new payment session for this: Medusa replaces the session, which hands the customer a new address.
+3. Open `wss://www.blockonomics.co/payment/{address}`. The first message means the payment has been seen: switch to a receipt screen with the transaction id. Messages carry `status` (`0` unconfirmed, `1`, `2` confirmed), `value` in satoshis, and `txid`. If `value` is short of the expected amount, offer to pay the remainder to the same address.
+4. Do not complete the cart from the storefront. The callback authorizes the session at the configured confirmations, and Medusa places the order. The receipt screen can read the cart until `completed_at` is set.
+
+### Re-quoting the amount
+
+```
+POST /store/blockonomics/payment-sessions/{payment_session_id}
+x-publishable-api-key: pk_...
+```
+
+Runs the provider's price refresh on the session. The address is kept. The amount is re-quoted at the current rate only when the price lock has expired and nothing has been received; a payment in progress keeps the amount the customer was quoted.
+
+```json
+{
+  "payment_session": {
+    "id": "payses_...",
+    "status": "pending",
+    "data": { "address": "...", "expected_satoshis": 30149, "btc_price": 66338.6, "price_locked_until": 1789701331086 }
+  }
+}
+```
+
+A complete reference page is in the plugin's repository under `examples/`.
 
 ## Refunds
 
