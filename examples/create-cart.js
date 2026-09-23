@@ -77,15 +77,36 @@ async function main() {
   console.log(`region: ${region.name} (${region.id}, ${region.currency_code})`)
 
   const { products } = await json(
-    `${MEDUSA}/store/products?region_id=${region.id}&limit=50`,
+    `${MEDUSA}/store/products?region_id=${region.id}&limit=50` +
+      "&fields=id,title,*variants,*variants.calculated_price",
     { headers: H }
   )
-  const product = products?.find((p) => p.variants?.length)
-  const variant = product?.variants?.[0]
-  if (!variant) {
-    die("no product variants found - is the publishable key linked to a sales channel with products?")
+
+  // A variant with no price in the region's currency cannot be added to a
+  // cart, so skip to one that has been priced rather than failing later on.
+  let product, variant
+  for (const p of products ?? []) {
+    const priced = (p.variants ?? []).find(
+      (v) => v.calculated_price?.calculated_amount != null
+    )
+    if (priced) {
+      product = p
+      variant = priced
+      break
+    }
   }
-  console.log(`product: ${product.title} / ${variant.title} (${variant.id})`)
+  const currency = region.currency_code.toUpperCase()
+  if (!variant) {
+    die(
+      products?.length
+        ? `no variant is priced in ${currency}; add prices for region "${region.name}"`
+        : "no products found - is the publishable key linked to a sales channel with products?"
+    )
+  }
+  console.log(
+    `product: ${product.title} / ${variant.title} (${variant.id})` +
+      ` - ${variant.calculated_price.calculated_amount} ${currency}`
+  )
 
   const { cart } = await json(`${MEDUSA}/store/carts`, {
     method: "POST",
@@ -142,7 +163,7 @@ async function main() {
   console.log(`address     ${d.address}`)
   console.log(`satoshis    ${d.expected_satoshis}`)
   console.log(`BTC         ${(d.expected_satoshis / 1e8).toFixed(8)}`)
-  console.log(`fiat        ${d.expected_fiat} ${region.currency_code.toUpperCase()}`)
+  console.log(`fiat        ${d.expected_fiat} ${currency}`)
   console.log(`btc_price   ${d.btc_price}`)
   console.log(`status      ${d.payment_status}`)
   console.log(`lock until  ${new Date(d.price_locked_until).toISOString()}`)
