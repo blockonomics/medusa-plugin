@@ -211,7 +211,7 @@ Runs the provider's price refresh on the session, what the WooCommerce plugin do
 }
 ```
 
-A complete reference page is in the plugin's repository under `examples/`.
+A complete reference page is in the plugin's repository under `examples/`, together with a script that creates a cart to drive it. See [Testing](#testing).
 
 ## Refunds
 
@@ -229,6 +229,21 @@ Blockonomics has a test mode that fires real callbacks without moving funds.
 4. On the [Test Bench](https://www.blockonomics.co/dashboard#/test-bench), send the quoted amount from the **Test Bitcoin Wallet**.
 
 Callbacks arrive with status `0` immediately, `1` after about 5 minutes, and `2` after about 10.
+
+### Without a storefront
+
+The payment screen can be exercised before a storefront exists. `examples/create-cart.js` builds a cart and a Blockonomics payment session over the Store API, and `examples/checkout-page.js` serves the payment screen for it on port 8000, which the default `STORE_CORS` already allows.
+
+```bash
+export MEDUSA_URL=https://your-store.com
+export ADMIN_EMAIL=you@example.com
+export ADMIN_PASSWORD=...
+
+node examples/create-cart.js                 # prints a cart id
+node examples/checkout-page.js <cart_id>     # http://localhost:8000
+```
+
+Both need Node 18 or later and have no dependencies. They sign in as an admin only to read a publishable key; everything after that goes through the Store API.
 
 
 ## License
