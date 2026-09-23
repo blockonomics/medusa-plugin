@@ -95,7 +95,7 @@ In the Medusa admin, go to **Settings → Regions**, edit the region, and add **
 | `priceLockSeconds` | `600` | How long the quoted BTC amount stays valid. Once it expires with nothing received, the amount is re-quoted at the current rate. Clamped to 300–1800. |
 | `underpaymentTolerance` | `0` | Fraction of the expected amount that may be missing and still count as paid, to absorb rounding and wallet fee deductions. `0.01` allows a 1% shortfall. Blockonomics for WooCommerce calls this underpayment slack. |
 | `overpaymentTolerance` | `0.05` | Excess above which the payment is flagged with `overpaid: true` for manual review. The payment still settles. |
-| `matchCallback` | - | Substring of the store's callback URL. Set it when the Blockonomics account has more than one store, so addresses are generated for the right one. |
+| `matchCallback` | - | Substring of the store's callback URL. Set it when the Blockonomics account has more than one store, so addresses are generated for the right one. An account with more than one store rejects address generation without it, with error `1032`, `Specify store using match_callback parameter`. |
 | `baseUrl` | `https://www.blockonomics.co` | Base URL of the Blockonomics API. Only useful for testing against a stub. |
 
 ### Choosing confirmations
@@ -229,6 +229,8 @@ Blockonomics has a test mode that fires real callbacks without moving funds.
 4. On the [Test Bench](https://www.blockonomics.co/dashboard#/test-bench), send the quoted amount from the **Test Bitcoin Wallet**.
 
 Callbacks arrive with status `0` immediately, `1` after about 5 minutes, and `2` after about 10.
+
+Checkout failing with `Blockonomics API responded with 400 for /api/new_address` and error `1032` means the account has more than one store and [`matchCallback`](#options) is unset. Set it to a substring of this store's callback URL that no other store in the account shares.
 
 ### Without a storefront
 
