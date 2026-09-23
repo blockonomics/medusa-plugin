@@ -14,9 +14,11 @@
  * Fulfilment stays with the callbacks: the order is placed server-side once
  * the configured confirmations arrive, and the receipt screen picks it up.
  *
- *   node scripts/checkout-demo.js [cart_id]
+ *   node examples/checkout-page.js [cart_id]
  *
- * Then open http://localhost:8000 (which STORE_CORS already allows).
+ * Then open http://localhost:8000. The page calls the Store API from the
+ * browser, so that origin has to be in the backend's storeCors. A local
+ * Medusa allows it by default; a remote one needs it added.
  */
 
 const http = require("http")
@@ -549,7 +551,7 @@ const MARK_ICON =
 
 async function main() {
   if (!CART_ID) {
-    console.error("Pass a cart id: node scripts/checkout-demo.js <cart_id>")
+    console.error("Pass a cart id: node examples/checkout-page.js <cart_id>")
     process.exit(1)
   }
 

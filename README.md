@@ -234,16 +234,18 @@ Checkout failing with `Blockonomics API responded with 400 for /api/new_address`
 
 ### Without a storefront
 
-The payment screen can be exercised before a storefront exists. `examples/create-cart.js` builds a cart and a Blockonomics payment session over the Store API, and `examples/checkout-page.js` serves the payment screen for it on port 8000, which the default `STORE_CORS` already allows.
+The payment screen can be exercised before a storefront exists. `examples/create-cart.js` builds a cart and a Blockonomics payment session over the Store API, and `examples/checkout-page.js` serves the payment screen for it on port 8000.
 
 ```bash
-export MEDUSA_URL=https://your-store.com
+export MEDUSA_URL=http://localhost:9000
 export ADMIN_EMAIL=you@example.com
 export ADMIN_PASSWORD=...
 
 node examples/create-cart.js                 # prints a cart id
 node examples/checkout-page.js <cart_id>     # http://localhost:8000
 ```
+
+The payment screen calls the Store API from the browser, so `http://localhost:8000` has to be in the server's `storeCors`. A local Medusa allows it by default. Point `MEDUSA_URL` at a deployed store and you have to add that origin there yourself.
 
 Both need Node 18 or later and have no dependencies. They sign in as an admin only to read a publishable key; everything after that goes through the Store API.
 
