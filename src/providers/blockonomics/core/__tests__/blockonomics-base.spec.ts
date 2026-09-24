@@ -10,7 +10,7 @@ import {
 
 const ADDRESS = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
 const NEXT_ADDRESS = "bc1qnext0000000000000000000000000000000000"
-const CALLBACK_SECRET = "callback-secret"
+const CALLBACK_SECRET = "MEDUSA_callback-secret"
 const BTC_PRICE = 100_000
 
 const baseOptions: BlockonomicsOptions = {
@@ -127,6 +127,26 @@ describe("BlockonomicsProviderService", () => {
           apiKey: "api-key",
         } as BlockonomicsOptions)
       ).toThrow(/callbackSecret is required/)
+    })
+
+    it("requires the callback secret to carry the MEDUSA_ prefix", () => {
+      expect(() =>
+        BlockonomicsProviderService.validateOptions({
+          ...baseOptions,
+          callbackSecret: "callback-secret",
+        })
+      ).toThrow(/must start with "MEDUSA_"/)
+
+      expect(() =>
+        BlockonomicsProviderService.validateOptions({
+          ...baseOptions,
+          callbackSecret: "MEDUSA_",
+        })
+      ).toThrow(/must start with "MEDUSA_"/)
+
+      expect(() =>
+        BlockonomicsProviderService.validateOptions(baseOptions)
+      ).not.toThrow()
     })
 
     it("rejects a confirmation threshold above the final count", () => {

@@ -13,8 +13,12 @@
     "url": "https://github.com/blockonomics/medusa-plugin/issues"
   },
   "files": [
-    ".medusa/server"
+    ".medusa/server",
+    "bin"
   ],
+  "bin": {
+    "medusa-payment-blockonomics": "bin/generate-callback-secret.js"
+  },
   "exports": {
     "./package.json": "./package.json",
     "./providers/*": "./.medusa/server/src/providers/*/index.js",
