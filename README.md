@@ -95,7 +95,7 @@ In the Medusa admin, go to **Settings → Regions**, edit the region, and add **
 | `priceLockSeconds` | `600` | How long the quoted BTC amount stays valid. Once it expires with nothing received, the amount is re-quoted at the current rate. Clamped to 300–1800. |
 | `underpaymentTolerance` | `0` | Fraction of the expected amount that may be missing and still count as paid, to absorb rounding and wallet fee deductions. `0.01` allows a 1% shortfall. Blockonomics for WooCommerce calls this underpayment slack. |
 | `overpaymentTolerance` | `0.05` | Excess above which the payment is flagged with `overpaid: true` for manual review. The payment still settles. |
-| `matchCallback` | - | Substring of the store's callback URL. Set it when the Blockonomics account has more than one store, so addresses are generated for the right one. |
+| `matchCallback` | - | Substring of the store's callback URL. Set it when the Blockonomics account has more than one store, so addresses are generated for the right one. An account with more than one store rejects address generation without it, with error `1032`, `Specify store using match_callback parameter`. |
 | `baseUrl` | `https://www.blockonomics.co` | Base URL of the Blockonomics API. Only useful for testing against a stub. |
 
 ### Choosing confirmations
@@ -211,7 +211,7 @@ Runs the provider's price refresh on the session, what the WooCommerce plugin do
 }
 ```
 
-A complete reference page is in the plugin's repository under `examples/`.
+A complete reference page is in the plugin's repository under `examples/`, together with a script that creates a cart to drive it. See [Testing](#testing).
 
 ## Refunds
 
@@ -229,6 +229,25 @@ Blockonomics has a test mode that fires real callbacks without moving funds.
 4. On the [Test Bench](https://www.blockonomics.co/dashboard#/test-bench), send the quoted amount from the **Test Bitcoin Wallet**.
 
 Callbacks arrive with status `0` immediately, `1` after about 5 minutes, and `2` after about 10.
+
+Checkout failing with `Blockonomics API responded with 400 for /api/new_address` and error `1032` means the account has more than one store and [`matchCallback`](#options) is unset. Set it to a substring of this store's callback URL that no other store in the account shares.
+
+### Without a storefront
+
+The payment screen can be exercised before a storefront exists. `examples/create-cart.js` builds a cart and a Blockonomics payment session over the Store API, and `examples/checkout-page.js` serves the payment screen for it on port 8000.
+
+```bash
+export MEDUSA_URL=http://localhost:9000
+export ADMIN_EMAIL=you@example.com
+export ADMIN_PASSWORD=...
+
+node examples/create-cart.js                 # prints a cart id
+node examples/checkout-page.js <cart_id>     # http://localhost:8000
+```
+
+The payment screen calls the Store API from the browser, so `http://localhost:8000` has to be in the server's `storeCors`. A local Medusa allows it by default. Point `MEDUSA_URL` at a deployed store and you have to add that origin there yourself.
+
+Both need Node 18 or later and have no dependencies. They sign in as an admin only to read a publishable key; everything after that goes through the Store API.
 
 
 ## License
