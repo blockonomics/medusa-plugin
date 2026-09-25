@@ -71,7 +71,7 @@ Generate the secret with:
 npx blockonomics-callback-secret
 ```
 
-It prints a random secret starting with `MEDUSA_`. The prefix is required; Medusa refuses to start without it. The secret is not issued by Blockonomics.
+It prints a `BLOCKONOMICS_CALLBACK_SECRET=MEDUSA_...` line to add to `.env`. The `MEDUSA_` prefix is required; Medusa refuses to start without it. The secret is not issued by Blockonomics.
 
 ### 2. Set the callback URL in Blockonomics
 
