@@ -65,13 +65,19 @@ BLOCKONOMICS_API_KEY=your_api_key
 BLOCKONOMICS_CALLBACK_SECRET=MEDUSA_...
 ```
 
-Generate the secret with:
+Generate the secret by running this in your Medusa project, after installing the plugin:
 
 ```bash
 npx blockonomics-callback-secret
 ```
 
-It prints a `BLOCKONOMICS_CALLBACK_SECRET=MEDUSA_...` line to add to `.env`. The `MEDUSA_` prefix is required; Medusa refuses to start without it. The secret is not issued by Blockonomics.
+It prints a `BLOCKONOMICS_CALLBACK_SECRET=MEDUSA_...` line to add to `.env`. Or, without the plugin installed:
+
+```bash
+node -e "console.log('MEDUSA_' + require('crypto').randomBytes(32).toString('hex'))"
+```
+
+The `MEDUSA_` prefix is required; Medusa refuses to start without it. The secret is not issued by Blockonomics.
 
 ### 2. Set the callback URL in Blockonomics
 
