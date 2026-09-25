@@ -14,7 +14,8 @@ export interface BlockonomicsOptions {
   /**
    * The secret set on the store's callback URL in the Blockonomics dashboard,
    * e.g. `https://example.com/hooks/blockonomics/blockonomics_blockonomics?secret=SECRET`.
-   * Callbacks that don't carry this secret are ignored.
+   * Callbacks that don't carry this secret are ignored. Must start with
+   * `MEDUSA_`; generate one with `npx blockonomics-callback-secret`.
    */
   callbackSecret: string
 

@@ -52,6 +52,9 @@ const MAX_PRICE_LOCK_SECONDS = 1800
 const DEFAULT_UNDERPAYMENT_TOLERANCE = 0
 const DEFAULT_OVERPAYMENT_TOLERANCE = 0.05
 
+/** Marks callback secrets as coming from this plugin, like WHMCS_ for WHMCS. */
+const CALLBACK_SECRET_PREFIX = "MEDUSA_"
+
 /**
  * Decimal places fiat amounts are kept to, matching what the store shows.
  */
@@ -98,6 +101,16 @@ abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOpti
       throw new MedusaError(
         MedusaError.Types.INVALID_DATA,
         "A callbackSecret is required in the Blockonomics provider's options. It must match the secret on the store's callback URL in the Blockonomics dashboard."
+      )
+    }
+
+    if (
+      !options.callbackSecret.startsWith(CALLBACK_SECRET_PREFIX) ||
+      options.callbackSecret.length === CALLBACK_SECRET_PREFIX.length
+    ) {
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        `The callbackSecret must start with "${CALLBACK_SECRET_PREFIX}". Generate one with \`npx blockonomics-callback-secret\`.`
       )
     }
 

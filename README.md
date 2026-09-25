@@ -62,10 +62,22 @@ Both entries are required. The `plugins` entry loads the callback route; the pro
 ```bash
 # .env
 BLOCKONOMICS_API_KEY=your_api_key
-BLOCKONOMICS_CALLBACK_SECRET=a_long_random_string
+BLOCKONOMICS_CALLBACK_SECRET=MEDUSA_...
 ```
 
-Generate the secret yourself, for example with `openssl rand -hex 32`. It is not issued by Blockonomics.
+Generate the secret by running this in your Medusa project, after installing the plugin:
+
+```bash
+npx blockonomics-callback-secret
+```
+
+It prints a `BLOCKONOMICS_CALLBACK_SECRET=MEDUSA_...` line to add to `.env`. Or, without the plugin installed:
+
+```bash
+node -e "console.log('MEDUSA_' + require('crypto').randomBytes(32).toString('hex'))"
+```
+
+The `MEDUSA_` prefix is required; Medusa refuses to start without it. The secret is not issued by Blockonomics.
 
 ### 2. Set the callback URL in Blockonomics
 
@@ -90,7 +102,7 @@ In the Medusa admin, go to **Settings → Regions**, edit the region, and add **
 | Option | Default | Description |
 | --- | --- | --- |
 | `apiKey` | - | **Required.** API key of the Blockonomics merchant account. |
-| `callbackSecret` | - | **Required.** Secret on the store's callback URL. Callbacks without it are ignored. |
+| `callbackSecret` | - | **Required.** Secret on the store's callback URL, starting with `MEDUSA_`. Callbacks without it are ignored. |
 | `confirmations` | `2` | On-chain confirmations a callback has to report before the payment is taken as settled and the order is placed: `0`, `1`, or `2`. See [Choosing confirmations](#choosing-confirmations). |
 | `priceLockSeconds` | `600` | How long the quoted BTC amount stays valid. Once it expires with nothing received, the amount is re-quoted at the current rate. Clamped to 300–1800. |
 | `underpaymentTolerance` | `0` | Fraction of the expected amount that may be missing and still count as paid, to absorb rounding and wallet fee deductions. `0.01` allows a 1% shortfall. Blockonomics for WooCommerce calls this underpayment slack. |
