@@ -68,7 +68,7 @@ BLOCKONOMICS_CALLBACK_SECRET=MEDUSA_...
 Generate the secret with:
 
 ```bash
-npx medusa-payment-blockonomics
+npx blockonomics-callback-secret
 ```
 
 It prints a random secret starting with `MEDUSA_`. The prefix is required; Medusa refuses to start without it. The secret is not issued by Blockonomics.

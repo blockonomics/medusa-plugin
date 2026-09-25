@@ -17,7 +17,7 @@
     "bin"
   ],
   "bin": {
-    "medusa-payment-blockonomics": "bin/generate-callback-secret.js"
+    "blockonomics-callback-secret": "bin/generate-callback-secret.js"
   },
   "exports": {
     "./package.json": "./package.json",

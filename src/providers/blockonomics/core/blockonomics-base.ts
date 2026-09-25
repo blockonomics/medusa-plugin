@@ -110,7 +110,7 @@ abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOpti
     ) {
       throw new MedusaError(
         MedusaError.Types.INVALID_DATA,
-        `The callbackSecret must start with "${CALLBACK_SECRET_PREFIX}". Generate one with \`npx medusa-payment-blockonomics\`.`
+        `The callbackSecret must start with "${CALLBACK_SECRET_PREFIX}". Generate one with \`npx blockonomics-callback-secret\`.`
       )
     }
 
