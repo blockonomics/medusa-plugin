@@ -126,8 +126,8 @@ export interface BlockonomicsPayment {
   confirmations: number
 
   /**
-   * What the settling callback reported, in satoshis, and its worth in fiat at
-   * the rate this address was quoted at. `0` until settled.
+   * What the latest callback reported, in satoshis, and its worth in fiat at
+   * the rate this address was quoted at. `paid_fiat` is `0` until settled.
    */
   paid_satoshis: number
   paid_fiat: number

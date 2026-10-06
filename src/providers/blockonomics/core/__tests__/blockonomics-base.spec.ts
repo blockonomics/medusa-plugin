@@ -549,7 +549,25 @@ describe("BlockonomicsProviderService", () => {
           payment_status: BlockonomicsPaymentStatus.IN_PROGRESS,
           confirmations: 0,
           txid: "tx",
+          paid_satoshis: 100_000,
           paid_fiat: 0,
+        })
+      )
+    })
+
+    it("records a short payment before it confirms", async () => {
+      const { provider } = buildProvider()
+
+      await provider.getWebhookActionAndData(
+        callback({ status: 0, value: 40_000 })
+      )
+
+      expect(persisted()).toEqual(
+        expect.objectContaining({
+          payment_status: BlockonomicsPaymentStatus.IN_PROGRESS,
+          paid_satoshis: 40_000,
+          paid_fiat: 0,
+          underpaid: false,
         })
       )
     })

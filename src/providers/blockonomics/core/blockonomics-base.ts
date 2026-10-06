@@ -452,6 +452,8 @@ abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOpti
         txid,
         confirmations: status,
         payment_status: BlockonomicsPaymentStatus.IN_PROGRESS,
+        // Recorded right away, so a short payment shows before it confirms.
+        paid_satoshis: satoshis,
       }
     }
 

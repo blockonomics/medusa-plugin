@@ -189,6 +189,7 @@ There is no hosted payment page. The storefront shows the customer where to send
 | `price_locked_until` | Unix milliseconds until the quote expires. |
 | `payment_status` | `0` nothing seen, `1` payment in progress, `2` settled. |
 | `confirmations` | Confirmations the latest callback reported. |
+| `paid_satoshis` | Received on `address`, from the first callback on. Compare it with `expected_satoshis` to show an underpayment before it confirms. |
 | `txid` | Transaction id, once one has been seen. |
 | `payments` | Every address of the session with the fields above, oldest first. |
 

@@ -226,6 +226,8 @@ const page = (publishableKey) => `<!doctype html>
   </div>
 
 <script>
+// Own scope, so globals that extensions inject (e.g. "btc") don't clash.
+{
   const CART_ID = ${JSON.stringify(CART_ID)}
   const MEDUSA = ${JSON.stringify(MEDUSA)}
   const KEY = ${JSON.stringify(publishableKey)}
@@ -361,7 +363,7 @@ const page = (publishableKey) => `<!doctype html>
       $("underpaid").classList.remove("hidden")
       $("due").textContent = fiat(dueFiat)
       renderConfirmations(payment.status, "underpaid-conf")
-      await offerRemainder()
+      await offerRemainder(payment.status)
       return
     }
 
@@ -371,8 +373,12 @@ const page = (publishableKey) => `<!doctype html>
   }
 
   // Asks the plugin for the next address. Until the underpayment has settled
-  // there is none, and the customer is asked to wait.
-  const offerRemainder = async () => {
+  // there is none, and the customer is asked to wait. The socket can report
+  // the confirmation before the callback has settled it, so a confirmed
+  // payment keeps asking until the address is there.
+  let remainderRetry = null
+  const offerRemainder = async (status) => {
+    clearTimeout(remainderRetry)
     const before = session.data.address
     try {
       await requote()
@@ -382,6 +388,8 @@ const page = (publishableKey) => `<!doctype html>
     $("underpaid-wait").classList.toggle("hidden", ready)
     if (ready) {
       $("pay-remaining").textContent = "Pay remaining " + fiat(session.data.expected_fiat)
+    } else if (status >= FINAL_CONFIRMATIONS) {
+      remainderRetry = setTimeout(() => offerRemainder(status), 5000)
     }
   }
 
@@ -523,7 +531,8 @@ const page = (publishableKey) => `<!doctype html>
         await showReceipt({
           txid: d.txid,
           status: d.confirmations,
-          value: d.payment_status === 2 ? d.paid_satoshis : d.expected_satoshis,
+          // Sessions from before paid_satoshis was recorded early have 0.
+          value: d.paid_satoshis || d.expected_satoshis,
         })
         connectSocket()
         return
@@ -535,6 +544,7 @@ const page = (publishableKey) => `<!doctype html>
       showError(error.message)
     }
   })()
+}
 </script>
 </body>
 </html>`
