@@ -209,6 +209,7 @@ const page = (publishableKey) => `<!doctype html>
         <button type="button" aria-label="Copy transaction id" data-copy="txid">${COPY_ICON}</button>
       </div>
       <div id="settled">
+        <p class="warn hidden" id="overpaid">You sent <strong id="extra"></strong> more than the order total. Contact the store about a refund.</p>
         <div class="confs"><i id="c0"></i><i id="c1"></i><i id="c2"></i></div>
         <p id="conf-text">Waiting for network confirmation</p>
         <p>Your order will be placed automatically once the payment is confirmed. You can leave this page open.</p>
@@ -367,6 +368,11 @@ const page = (publishableKey) => `<!doctype html>
 
     $("underpaid").classList.add("hidden")
     $("settled").classList.remove("hidden")
+
+    // Valued at the quoted rate, like the plugin values payments.
+    const extraFiat = d.expected_fiat * (payment.value / d.expected_satoshis - 1)
+    $("overpaid").classList.toggle("hidden", extraFiat < 0.01)
+    $("extra").textContent = fiat(extraFiat)
     renderConfirmations(payment.status)
   }
 

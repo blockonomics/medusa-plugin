@@ -616,6 +616,26 @@ describe("BlockonomicsProviderService", () => {
       )
     })
 
+    it("records and warns about an overpayment, and still completes the payment", async () => {
+      const { provider } = buildProvider()
+
+      const result = await provider.getWebhookActionAndData(
+        callback({ value: 600_000 })
+      )
+
+      expect(result.action).toEqual(PaymentActions.SUCCESSFUL)
+      expect(persisted()).toEqual(
+        expect.objectContaining({
+          paid_satoshis: 600_000,
+          paid_fiat: 600,
+          overpaid: true,
+        })
+      )
+      expect(container.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("overpaid: received 600")
+      )
+    })
+
     it("ignores further callbacks for a settled address", async () => {
       const { provider } = buildProvider()
       openSession(sessionData([settled({ paid_satoshis: 40_000, paid_fiat: 40 })]))
