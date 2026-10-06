@@ -103,7 +103,7 @@ In the Medusa admin, go to **Settings → Regions**, edit the region, and add **
 | --- | --- | --- |
 | `apiKey` | - | **Required.** API key of the Blockonomics merchant account. |
 | `callbackSecret` | - | **Required.** Secret on the store's callback URL, starting with `MEDUSA_`. Callbacks without it are ignored. |
-| `confirmations` | `2` | On-chain confirmations a callback has to report before the payment is taken as settled and the order is placed: `0`, `1`, or `2`. See [Choosing confirmations](#choosing-confirmations). |
+| `confirmations` | `2` | On-chain confirmations a callback has to report before the payment is taken as settled and the order is marked paid: `0`, `1`, or `2`. See [Choosing confirmations](#choosing-confirmations). |
 | `priceLockSeconds` | `600` | How long the quoted BTC amount stays valid. Once it expires with nothing received, the amount is re-quoted at the current rate. Clamped to 300–1800. |
 | `underpaymentTolerance` | `0` | Fraction of the expected amount that may be missing and still count as paid, to absorb rounding and wallet fee deductions. `0.01` allows a 1% shortfall. Blockonomics for WooCommerce calls this underpayment slack. |
 | `overpaymentTolerance` | `0.05` | Excess above which the payment is flagged with `overpaid: true` for manual review. The payment still settles. |
@@ -112,13 +112,13 @@ In the Medusa admin, go to **Settings → Regions**, edit the region, and add **
 
 ### Choosing confirmations
 
-| Value | Order placed | Risk |
+| Value | Order marked paid | Risk |
 | --- | --- | --- |
 | `0` | As soon as the transaction is seen in the mempool | The sender can still double-spend it. Only use for low-value or reversible fulfilment. |
 | `1` | After about 10 minutes | Low. |
 | `2` | After about 20 minutes | Lowest. Recommended default. |
 
-The payment is captured as soon as it settles, whichever value you pick, the way Blockonomics for WooCommerce completes the order at its network confirmation setting.
+Whichever value you pick, the order is placed as soon as the transaction is seen and marked paid once it settles. See [Orders](#orders).
 
 Unconfirmed transactions that opted into Replace-By-Fee are never treated as paid, even with `confirmations: 0`, because the sender can still replace them.
 
@@ -164,15 +164,22 @@ The provider follows the payment model of the Blockonomics WooCommerce plugin. E
 | Callback | Payment | Payment session status |
 | --- | --- | --- |
 | None yet | `new` - the quote can still be refreshed | `pending` |
-| Below `confirmations` | `in progress` - address and quote are frozen | `pending_authorization` |
-| At or above `confirmations`, amount covered | `settled` | `captured`, order is placed |
+| Below `confirmations` | `in progress` - address and quote are frozen | `pending_authorization`, order is placed |
+| At or above `confirmations`, amount covered | `settled` | `captured`, order is paid |
 | At or above `confirmations`, amount short | `settled`, underpaid | `pending_authorization` |
 
 What a settled payment paid is recorded in satoshis and in fiat, valued at the rate that address was quoted at: a customer who sent 40% of the BTC asked for has paid 40% of the fiat, whatever the rate has done since.
 
-**Underpayments.** The remainder in fiat is quoted on a fresh address at the current rate the next time the quote is refreshed (see [Re-quoting the amount](#re-quoting-the-amount)). The settled address stays on the session as the record of the partial payment. The order is placed once the last address settles in full. Nothing is refunded automatically; an overpayment is flagged with `overpaid: true` and settles.
+**Underpayments.** The remainder in fiat is quoted on a fresh address at the current rate the next time the quote is refreshed (see [Re-quoting the amount](#re-quoting-the-amount)). The settled address stays on the session as the record of the partial payment. The order is paid once the last address settles in full. Nothing is refunded automatically; an overpayment is flagged with `overpaid: true` and settles.
 
 A settled address ignores further callbacks. An unconfirmed transaction that opted into Replace-By-Fee only has its transaction id recorded, since the sender can still cancel it.
+
+### Orders
+
+- The order is placed as soon as a transaction is seen. It shows in the admin with payment status **Awaiting**.
+- Once the payment settles in full, it changes to **Captured**. Only fulfil **Captured** orders.
+- An underpaid order stays **Awaiting** until the remainder settles.
+- If a transaction never confirms (e.g. double-spent), the order stays **Awaiting**. Cancel it in the admin.
 
 ## Storefront
 
@@ -198,7 +205,7 @@ The flow the Blockonomics WooCommerce plugin uses, and what to build:
 2. Count down to `price_locked_until`. When it runs out, re-quote through the plugin's store route below and update the amount, rate, and QR code. Do not create a new payment session for this: Medusa replaces the session, which hands the customer a new address.
 3. Open `wss://www.blockonomics.co/payment/{address}`. The first message means the payment has been seen: switch to a receipt screen with the transaction id. Messages carry `status` (`0` unconfirmed, `1`, `2` confirmed), `value` in satoshis, and `txid`.
 4. If `value` is short of `expected_satoshis`, show the shortfall in fiat (`expected_fiat * (1 - value / expected_satoshis)`). The remainder can be paid once the underpayment has confirmed: call the re-quote route, and when it comes back with a new `address`, return to the payment screen for it. Show `paid_fiat` and `expected_fiat` as the paid and remaining amounts.
-5. Do not complete the cart from the storefront. The callback settles the session at the configured confirmations, and Medusa places the order. The receipt screen can read the cart until `completed_at` is set.
+5. Do not complete the cart from the storefront. The callbacks place the order and mark it paid. Poll the cart until `completed_at` is set, and follow the socket for confirmations.
 
 ### Re-quoting the amount
 
@@ -240,7 +247,7 @@ Blockonomics has a test mode that fires real callbacks without moving funds.
 3. Place an order in your storefront and choose Blockonomics.
 4. On the [Test Bench](https://www.blockonomics.co/dashboard#/test-bench), send the quoted amount from the **Test Bitcoin Wallet**.
 
-Callbacks arrive with status `0` immediately, `1` after about 5 minutes, and `2` after about 10.
+Callbacks arrive with status `0` immediately, `1` after about 5 minutes, and `2` after about 10. The order appears in the admin as **Awaiting** after status `0`, and turns **Captured** at `confirmations`.
 
 Checkout failing with `Blockonomics API responded with 400 for /api/new_address` and error `1032` means the account has more than one store and [`matchCallback`](#options) is unset. Set it to a substring of this store's callback URL that no other store in the account shares.
 

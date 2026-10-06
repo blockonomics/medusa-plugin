@@ -3,16 +3,16 @@ import {
   PaymentModuleOptions,
   ProviderWebhookPayload,
 } from "@medusajs/framework/types"
-import { Modules, PaymentWebhookEvents } from "@medusajs/framework/utils"
+import { Modules } from "@medusajs/framework/utils"
+
+import { BLOCKONOMICS_WEBHOOK_EVENT } from "../../../../subscribers/blockonomics-webhook"
 
 /**
  * Receives Blockonomics payment callbacks.
  *
- * Medusa's own `/hooks/payment/:provider` endpoint only accepts `POST`, while
- * Blockonomics notifies with a `GET` request carrying the payment in the query
- * string. This route emits the same event as Medusa's endpoint, with the query
- * in place of the body, so Medusa's payment webhook subscriber processes it
- * and the provider's `getWebhookActionAndData` receives the callback values.
+ * Blockonomics sends callbacks as `GET`, which Medusa's `/hooks/payment`
+ * endpoint does not accept. This route passes the query to the plugin's
+ * webhook subscriber instead.
  *
  * `:provider` is `blockonomics_{id}`, where `id` is the provider's `id` in
  * `medusa-config.ts`.
@@ -40,7 +40,7 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
     // that created the payment session.
     await eventBus.emit(
       {
-        name: PaymentWebhookEvents.WebhookReceived,
+        name: BLOCKONOMICS_WEBHOOK_EVENT,
         data: event,
       },
       {
