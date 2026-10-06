@@ -13,8 +13,8 @@
  *     confirms, the remainder is quoted on a fresh address at the current
  *     rate and "Pay remaining" returns to the payment screen for it
  *
- * Fulfilment stays with the callbacks: the order is placed server-side once
- * the configured confirmations arrive, and the receipt screen picks it up.
+ * The order is placed server-side when the payment is seen, and marked paid
+ * once it confirms.
  *
  *   node examples/checkout-page.js [cart_id]
  *
@@ -229,7 +229,7 @@ const page = (publishableKey) => `<!doctype html>
         <p class="warn hidden" id="overpaid">Contact the store about a refund of the extra amount.</p>
         <div class="confs"><i id="c0"></i><i id="c1"></i><i id="c2"></i></div>
         <p id="conf-text">Waiting for network confirmation</p>
-        <p>Your order will be placed automatically once the payment is confirmed. You can leave this page open.</p>
+        <p id="order-note">Your order is marked paid once the payment confirms. You can close this page.</p>
         <p class="order" id="order"></p>
       </div>
       <div id="underpaid" class="hidden">
@@ -366,8 +366,11 @@ const page = (publishableKey) => `<!doctype html>
 
     $("payment").classList.add("hidden")
     $("receipt").classList.remove("hidden")
-    $("txid").textContent = payment.txid
-    $("txid").title = payment.txid
+    // Not every socket message repeats the transaction id.
+    const txid = payment.txid || d.txid || ""
+    $("txid").textContent = txid
+    $("txid").title = txid
+    document.querySelector(".txid").classList.toggle("hidden", !txid)
 
     // Valued at the quoted rate, like the plugin values payments. The BTC
     // amount comes first: it is what the customer's wallet shows.
@@ -426,6 +429,7 @@ const page = (publishableKey) => `<!doctype html>
       const el = $("c" + i)
       el.className = status >= i ? (i === FINAL_CONFIRMATIONS ? "done" : "on") : ""
     })
+    $("order-note").classList.toggle("hidden", status >= FINAL_CONFIRMATIONS)
     $(textId).textContent =
       status >= FINAL_CONFIRMATIONS
         ? "Transaction confirmed"
@@ -434,9 +438,7 @@ const page = (publishableKey) => `<!doctype html>
         : "Seen on the network, waiting for confirmation"
   }
 
-  // The order is placed server-side by the Blockonomics callback. Once the
-  // socket reports the payment as confirmed, the cart is checked until it
-  // has been completed.
+  // Polls the cart until the callback has placed the order.
   const watchOrder = () => {
     if (orderPoll) return
     const check = async () => {
@@ -477,12 +479,10 @@ const page = (publishableKey) => `<!doctype html>
         try { payment = JSON.parse(event.data) } catch { return }
         clearInterval(timer)
         showReceipt(payment)
+        watchOrder()
         if (payment.status >= FINAL_CONFIRMATIONS) {
           wsClosed = true
           ws.close()
-          if (payment.value >= session.data.expected_satoshis) {
-            watchOrder()
-          }
         }
       }
       ws.onclose = () => {
@@ -543,24 +543,15 @@ const page = (publishableKey) => `<!doctype html>
       session = findSession()
       if (!session) throw new Error("No Blockonomics session on this cart.")
 
-      if (cart.completed_at) {
-        $("payment").classList.add("hidden")
-        $("receipt").classList.remove("hidden")
-        renderConfirmations(FINAL_CONFIRMATIONS)
-        watchOrder()
-        return
-      }
-
-      // Reloaded mid-payment: the active address already has a payment on it,
-      // so the receipt is shown from what the callbacks recorded. The socket
-      // catches up on the payment's state when it connects.
+      // Reloaded after paying: show the receipt from the stored session data.
       const d = session.data
-      if (d.payment_status !== 0) {
+      if (cart.completed_at || d.payment_status !== 0) {
         await showReceipt({
           txid: d.txid,
           status: d.confirmations,
           value: d.payment_status === 2 ? d.paid_satoshis : d.expected_satoshis,
         })
+        watchOrder()
         connectSocket()
         return
       }

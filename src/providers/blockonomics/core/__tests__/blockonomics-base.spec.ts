@@ -589,7 +589,7 @@ describe("BlockonomicsProviderService", () => {
         callback({ status: 0, rbf: 1 })
       )
 
-      expect(result.action).toEqual(PaymentActions.PENDING_AUTHORIZATION)
+      expect(result.action).toEqual(PaymentActions.PENDING)
       expect(persisted()).toEqual(
         expect.objectContaining({
           payment_status: BlockonomicsPaymentStatus.NEW,

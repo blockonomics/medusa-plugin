@@ -432,16 +432,20 @@ abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOpti
       amount: updated.fiat_amount,
     }
 
+    // PENDING_AUTHORIZATION places the order; PENDING (nothing seen, or only an
+    // RBF transaction) does not.
     switch (this.getStatusFor_(updated)) {
       case PaymentSessionStatus.CAPTURED:
         return { action: PaymentActions.SUCCESSFUL, data: webhookData }
       case PaymentSessionStatus.AUTHORIZED:
         return { action: PaymentActions.AUTHORIZED, data: webhookData }
-      default:
+      case PaymentSessionStatus.PENDING_AUTHORIZATION:
         return {
           action: PaymentActions.PENDING_AUTHORIZATION,
           data: webhookData,
         }
+      default:
+        return { action: PaymentActions.PENDING, data: webhookData }
     }
   }
 
