@@ -71,7 +71,9 @@ const BlockonomicsPaymentWidget = ({
             {data.overpaid && (
               <Text size="small" className="text-ui-fg-subtle">
                 The customer sent {money(difference)} more than the order
-                total. Refunds are sent from your own wallet.
+                total. Nothing is refunded automatically: decide whether to
+                send the difference back from your wallet or compensate the
+                customer another way.
               </Text>
             )}
             {data.payments!.map((payment) => (

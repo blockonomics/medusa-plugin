@@ -562,7 +562,12 @@ abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOpti
       confirmations: active.confirmations,
       paid_satoshis: active.paid_satoshis,
       txid: active.txid,
-      underpaid: settled.some((payment) => this.isShort_(payment)),
+      // A shortfall the customer has since topped up no longer counts.
+      underpaid:
+        !(
+          active.payment_status === BlockonomicsPaymentStatus.SETTLED &&
+          !this.isShort_(active)
+        ) && settled.some((payment) => this.isShort_(payment)),
       overpaid: settled.some((payment) =>
         isOverpaid(
           payment.paid_satoshis,

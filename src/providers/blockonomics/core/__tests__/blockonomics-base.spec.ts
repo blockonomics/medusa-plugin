@@ -290,7 +290,35 @@ describe("BlockonomicsProviderService", () => {
 
       expect(result.status).toEqual(PaymentSessionStatus.CAPTURED)
       expect(result.data).toEqual(
-        expect.objectContaining({ paid_fiat: 100, address: NEXT_ADDRESS })
+        expect.objectContaining({
+          paid_fiat: 100,
+          address: NEXT_ADDRESS,
+          underpaid: false,
+        })
+      )
+    })
+
+    it("flags only the overpayment when the remainder was overpaid", async () => {
+      const { provider } = buildProvider()
+
+      const result = await provider.getPaymentStatus({
+        data: sessionData([
+          settled({ paid_satoshis: 40_000, paid_fiat: 40 }),
+          settled({
+            address: NEXT_ADDRESS,
+            expected_fiat: 60,
+            expected_satoshis: 50_000,
+            btc_price: 120_000,
+            paid_satoshis: 60_000,
+            paid_fiat: 72,
+            txid: "tx2",
+          }),
+        ]),
+      })
+
+      expect(result.status).toEqual(PaymentSessionStatus.CAPTURED)
+      expect(result.data).toEqual(
+        expect.objectContaining({ underpaid: false, overpaid: true })
       )
     })
   })
@@ -670,7 +698,7 @@ describe("BlockonomicsProviderService", () => {
 
       expect(result.action).toEqual(PaymentActions.SUCCESSFUL)
       expect(persisted()).toEqual(
-        expect.objectContaining({ paid_fiat: 100, underpaid: true })
+        expect.objectContaining({ paid_fiat: 100, underpaid: false })
       )
       expect(persisted().payments[1]).toEqual(
         expect.objectContaining({ paid_satoshis: 50_000, paid_fiat: 60 })
