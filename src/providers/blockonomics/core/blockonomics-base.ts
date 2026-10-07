@@ -410,6 +410,23 @@ abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOpti
     // this payment.
     await this.persistSessionData_(session.id, updated)
 
+    const before = sessionData.payments.find((p) => p.address === address)
+    const after = payments.find((p) => p.address === address)
+
+    if (
+      before?.payment_status !== BlockonomicsPaymentStatus.SETTLED &&
+      after?.payment_status === BlockonomicsPaymentStatus.SETTLED &&
+      isOverpaid(
+        after.paid_satoshis,
+        after.expected_satoshis,
+        this.overpaymentTolerance
+      )
+    ) {
+      this.logger_.warn(
+        `Blockonomics payment on ${address} overpaid: received ${after.paid_fiat} ${updated.currency_code} for ${after.expected_fiat} ${updated.currency_code}. Refund the difference from your wallet.`
+      )
+    }
+
     const webhookData = {
       session_id: session.id,
       amount: updated.fiat_amount,
@@ -545,7 +562,12 @@ abstract class BlockonomicsBase extends AbstractPaymentProvider<BlockonomicsOpti
       confirmations: active.confirmations,
       paid_satoshis: active.paid_satoshis,
       txid: active.txid,
-      underpaid: settled.some((payment) => this.isShort_(payment)),
+      // A shortfall the customer has since topped up no longer counts.
+      underpaid:
+        !(
+          active.payment_status === BlockonomicsPaymentStatus.SETTLED &&
+          !this.isShort_(active)
+        ) && settled.some((payment) => this.isShort_(payment)),
       overpaid: settled.some((payment) =>
         isOverpaid(
           payment.paid_satoshis,

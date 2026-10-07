@@ -7,7 +7,9 @@
  *     re-quoted through the plugin's store route, keeping the address
  *   - the Blockonomics WebSocket drives the page: the first message switches
  *     to the receipt screen, later ones advance the confirmation count
- *   - an underpayment shows what was paid and what is left, in fiat; once it
+ *   - the receipt shows what was sent (BTC, and fiat at the quoted rate)
+ *     against what was due, and any shortfall or excess
+ *   - an underpayment is flagged as partial; once it
  *     confirms, the remainder is quoted on a fresh address at the current
  *     rate and "Pay remaining" returns to the payment screen for it
  *
@@ -137,6 +139,16 @@ const page = (publishableKey) => `<!doctype html>
   .receipt h2 { margin: 0 0 6px; font-size: 19px; letter-spacing: -0.01em; }
   .receipt p { margin: 0 0 8px; color: var(--muted); font-size: 14px; }
   .receipt .warn { color: var(--warn); }
+  .receipt.is-short .mark { color: var(--warn); }
+  .summary {
+    display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 16px 0 4px;
+    padding: 12px 16px; border: 1px solid var(--line); border-radius: 10px;
+    font-size: 13.5px; text-align: left;
+  }
+  .summary dt { color: var(--muted); }
+  .summary dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+  .summary .fiat { color: var(--muted); }
+  .summary .warn { font-weight: 600; }
   .txid {
     display: flex; align-items: center; justify-content: center; gap: 8px; margin: 14px auto;
     max-width: 100%; font-size: 12.5px; color: var(--muted);
@@ -202,20 +214,25 @@ const page = (publishableKey) => `<!doctype html>
     <!-- Receipt screen -->
     <div id="receipt" class="receipt hidden">
       <div class="mark">${MARK_ICON}</div>
-      <h2>Payment received</h2>
+      <h2 id="receipt-title">Payment received</h2>
       <div class="txid">
         <span>txid</span>
         <code id="txid" title=""></code>
         <button type="button" aria-label="Copy transaction id" data-copy="txid">${COPY_ICON}</button>
       </div>
+      <dl class="summary hidden" id="summary">
+        <dt>Sent</dt><dd><span id="sent-btc"></span> <span class="fiat" id="sent-fiat"></span></dd>
+        <dt>Amount due</dt><dd id="due-fiat"></dd>
+        <dt class="warn hidden" id="diff-label"></dt><dd class="warn hidden" id="diff-fiat"></dd>
+      </dl>
       <div id="settled">
+        <p class="warn hidden" id="overpaid">Contact the store about a refund of the extra amount.</p>
         <div class="confs"><i id="c0"></i><i id="c1"></i><i id="c2"></i></div>
         <p id="conf-text">Waiting for network confirmation</p>
         <p id="order-note">Your order is marked paid once the payment confirms. You can close this page.</p>
         <p class="order" id="order"></p>
       </div>
       <div id="underpaid" class="hidden">
-        <p class="warn">Order was underpaid by <strong id="due"></strong>.</p>
         <p id="underpaid-conf"></p>
         <p id="underpaid-wait">The remaining amount can be paid once this payment has confirmed. You can leave this page open.</p>
         <button class="btn hidden" id="pay-remaining" type="button">Pay remaining</button>
@@ -355,14 +372,21 @@ const page = (publishableKey) => `<!doctype html>
     $("txid").title = txid
     document.querySelector(".txid").classList.toggle("hidden", !txid)
 
-    if (payment.value < d.expected_satoshis) {
-      // Short. The shortfall is worth what it was quoted at. The remainder can
-      // only be paid once this payment settles and the plugin hands out the
-      // next address, so the button waits for that.
-      const dueFiat = d.expected_fiat * (1 - payment.value / d.expected_satoshis)
+    // Valued at the quoted rate, like the plugin values payments. The BTC
+    // amount comes first: it is what the customer's wallet shows.
+    const sentFiat = d.expected_fiat * (payment.value / d.expected_satoshis)
+    const diffFiat = sentFiat - d.expected_fiat
+    const short = payment.value < d.expected_satoshis
+    const over = !short && diffFiat >= 0.01
+    renderSummary(payment.value, sentFiat, short ? "Still to pay" : over ? "Extra sent" : null, Math.abs(diffFiat))
+    $("receipt").classList.toggle("is-short", short)
+    $("receipt-title").textContent = short ? "Partial payment received" : "Payment received"
+
+    if (short) {
+      // The remainder can only be paid once this payment settles and the
+      // plugin hands out the next address, so the button waits for that.
       $("settled").classList.add("hidden")
       $("underpaid").classList.remove("hidden")
-      $("due").textContent = fiat(dueFiat)
       renderConfirmations(payment.status, "underpaid-conf")
       await offerRemainder()
       return
@@ -370,7 +394,19 @@ const page = (publishableKey) => `<!doctype html>
 
     $("underpaid").classList.add("hidden")
     $("settled").classList.remove("hidden")
+    $("overpaid").classList.toggle("hidden", !over)
     renderConfirmations(payment.status)
+  }
+
+  const renderSummary = (sats, sentFiat, diffLabel, diffFiat) => {
+    $("summary").classList.remove("hidden")
+    $("sent-btc").textContent = btc(sats) + " BTC"
+    $("sent-fiat").textContent = "(≈ " + fiat(sentFiat) + ")"
+    $("due-fiat").textContent = fiat(session.data.expected_fiat)
+    $("diff-label").classList.toggle("hidden", !diffLabel)
+    $("diff-fiat").classList.toggle("hidden", !diffLabel)
+    $("diff-label").textContent = diffLabel ?? ""
+    $("diff-fiat").textContent = fiat(diffFiat)
   }
 
   // Asks the plugin for the next address. Until the underpayment has settled
@@ -396,7 +432,7 @@ const page = (publishableKey) => `<!doctype html>
     $("order-note").classList.toggle("hidden", status >= FINAL_CONFIRMATIONS)
     $(textId).textContent =
       status >= FINAL_CONFIRMATIONS
-        ? "Payment confirmed"
+        ? "Transaction confirmed"
         : status === 1
         ? "1 confirmation, waiting for 1 more"
         : "Seen on the network, waiting for confirmation"

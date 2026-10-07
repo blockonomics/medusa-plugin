@@ -170,7 +170,9 @@ The provider follows the payment model of the Blockonomics WooCommerce plugin. E
 
 What a settled payment paid is recorded in satoshis and in fiat, valued at the rate that address was quoted at: a customer who sent 40% of the BTC asked for has paid 40% of the fiat, whatever the rate has done since.
 
-**Underpayments.** The remainder in fiat is quoted on a fresh address at the current rate the next time the quote is refreshed (see [Re-quoting the amount](#re-quoting-the-amount)). The settled address stays on the session as the record of the partial payment. The order is paid once the last address settles in full. Nothing is refunded automatically; an overpayment is flagged with `overpaid: true` and settles.
+**Underpayments.** The remainder in fiat is quoted on a fresh address at the current rate the next time the quote is refreshed (see [Re-quoting the amount](#re-quoting-the-amount)). The settled address stays on the session as the record of the partial payment. The order is paid once the last address settles in full. Nothing is refunded automatically.
+
+**Overpayments.** The payment settles as normal, and Medusa records the order total as captured. What was actually received is shown in the **Bitcoin payment** box on the order page in the admin, flagged **Overpaid** above `overpaymentTolerance`, and logged as a warning. Refund the difference from your wallet.
 
 A settled address ignores further callbacks. An unconfirmed transaction that opted into Replace-By-Fee only has its transaction id recorded, since the sender can still cancel it.
 
