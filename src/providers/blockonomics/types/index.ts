@@ -181,8 +181,8 @@ export interface BlockonomicsPaymentData extends Record<string, unknown> {
   txid: string | null
 
   /**
-   * Set once a settled payment came in short. The storefront asks for the
-   * remainder on the next address.
+   * Set while a settled payment came in short and the remainder is still
+   * unpaid. The storefront asks for it on the next address.
    */
   underpaid?: boolean
 
