@@ -185,7 +185,11 @@ A settled address ignores further callbacks. An unconfirmed transaction that opt
 
 ## Storefront
 
-There is no hosted payment page. The storefront shows the customer where to send Bitcoin, using the payment session's `data`:
+There is no hosted payment page. The storefront shows the customer where to send Bitcoin, using the payment session's `data`.
+
+[`examples/checkout-page.js`](https://github.com/blockonomics/medusa-plugin/blob/main/examples/checkout-page.js) is a working payment screen that implements everything in this section, in plain JavaScript with no framework. Start from it and port it to your storefront. [Without a storefront](#without-a-storefront) shows how to run it against a cart.
+
+The session's `data` carries:
 
 | Field | Description |
 | --- | --- |
@@ -201,13 +205,15 @@ There is no hosted payment page. The storefront shows the customer where to send
 | `txid` | Transaction id, once one has been seen. |
 | `payments` | Every address of the session with the fields above, oldest first. |
 
-The flow the Blockonomics WooCommerce plugin uses, and what to build:
+The flow the Blockonomics WooCommerce plugin uses, and what to build. The function names point to where the example does each step:
 
-1. Show a QR code of `bitcoin:{address}?amount={btc}`, an "Open in wallet" link to the same URI, and the address and amount as copyable fields.
-2. Count down to `price_locked_until`. When it runs out, re-quote through the plugin's store route below and update the amount, rate, and QR code. Do not create a new payment session for this: Medusa replaces the session, which hands the customer a new address.
-3. Open `wss://www.blockonomics.co/payment/{address}`. The first message means the payment has been seen: switch to a receipt screen with the transaction id. Messages carry `status` (`0` unconfirmed, `1`, `2` confirmed), `value` in satoshis, and `txid`.
-4. If `value` is short of `expected_satoshis`, show the shortfall in fiat (`expected_fiat * (1 - value / expected_satoshis)`). The remainder can be paid once the underpayment has confirmed: call the re-quote route, and when it comes back with a new `address`, return to the payment screen for it. Show `paid_fiat` and `expected_fiat` as the paid and remaining amounts.
-5. Do not complete the cart from the storefront. The callbacks place the order and mark it paid. Poll the cart until `completed_at` is set, and follow the socket for confirmations.
+1. Find the cart's payment session whose `provider_id` starts with `pp_blockonomics` (`findSession`).
+2. Show a QR code of `bitcoin:{address}?amount={btc}`, an "Open in wallet" link to the same URI, and the address and amount as copyable fields (`renderPayment`).
+3. Count down to `price_locked_until`. When it runs out, re-quote through the plugin's store route below and update the amount, rate, and QR code (`startTimer`, `refresh`, `requote`). Do not create a new payment session for this: Medusa replaces the session, which hands the customer a new address.
+4. Open `wss://www.blockonomics.co/payment/{address}`, and reconnect if it drops. The first message means the payment has been seen: switch to a receipt screen with the transaction id. Messages carry `status` (`0` unconfirmed, `1`, `2` confirmed), `value` in satoshis, and `txid` (`connectSocket`, `showReceipt`).
+5. If `value` is short of `expected_satoshis`, show the shortfall in fiat (`expected_fiat * (1 - value / expected_satoshis)`). The remainder can be paid once the underpayment has confirmed: call the re-quote route, and when it comes back with a new `address`, return to the payment screen for it. Show `paid_fiat` and `expected_fiat` as the paid and remaining amounts (`offerRemainder`, the **Pay remaining** handler).
+6. Do not complete the cart from the storefront. The callbacks place the order and mark it paid. Poll the cart until `completed_at` is set, and follow the socket for confirmations (`watchOrder`).
+7. When the page is reloaded after paying, `payment_status` is no longer `0`: show the receipt from the session data instead of the payment screen (the boot block at the end of the page script).
 
 ### Re-quoting the amount
 
@@ -231,8 +237,6 @@ Runs the provider's price refresh on the session, what the WooCommerce plugin do
   }
 }
 ```
-
-A complete reference page is in the plugin's repository under `examples/`, together with a script that creates a cart to drive it. See [Testing](#testing).
 
 ## Refunds
 
