@@ -1,5 +1,5 @@
 {
-  "name": "medusa-payment-blockonomics",
+  "name": "@blockonomics/medusa-payment-blockonomics",
   "version": "1.0.0",
   "description": "Accept Bitcoin payments in Medusa v2 through Blockonomics, straight to the merchant's own wallet.",
   "author": "Blockonomics (https://www.blockonomics.co)",
@@ -11,6 +11,9 @@
   },
   "bugs": {
     "url": "https://github.com/blockonomics/medusa-plugin/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     ".medusa/server",
