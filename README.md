@@ -1,4 +1,4 @@
-# medusa-payment-blockonomics
+# @blockonomics/medusa-payment-blockonomics
 
 Accept Bitcoin payments in [Medusa](https://medusajs.com) v2 through [Blockonomics](https://www.blockonomics.co). Payments go straight to the merchant's own wallet: Blockonomics generates a fresh address for each checkout and notifies Medusa as the transaction is seen and confirmed on-chain.
 
@@ -13,7 +13,7 @@ Blockonomics never holds funds. That makes refunds a manual step, covered under 
 ## Install
 
 ```bash
-npm install medusa-payment-blockonomics
+npm install @blockonomics/medusa-payment-blockonomics
 ```
 
 ## Configure
@@ -32,7 +32,7 @@ module.exports = defineConfig({
   // ...
   plugins: [
     {
-      resolve: "medusa-payment-blockonomics",
+      resolve: "@blockonomics/medusa-payment-blockonomics",
       options: {},
     },
   ],
@@ -42,7 +42,7 @@ module.exports = defineConfig({
       options: {
         providers: [
           {
-            resolve: "medusa-payment-blockonomics/providers/blockonomics",
+            resolve: "@blockonomics/medusa-payment-blockonomics/providers/blockonomics",
             id: "blockonomics",
             options: {
               apiKey: process.env.BLOCKONOMICS_API_KEY,
@@ -130,7 +130,7 @@ There is no settings screen for provider options, but you can register the provi
 // medusa-config.ts
 providers: [
   {
-    resolve: "medusa-payment-blockonomics/providers/blockonomics",
+    resolve: "@blockonomics/medusa-payment-blockonomics/providers/blockonomics",
     id: "instant",
     options: {
       apiKey: process.env.BLOCKONOMICS_API_KEY,
@@ -139,7 +139,7 @@ providers: [
     },
   },
   {
-    resolve: "medusa-payment-blockonomics/providers/blockonomics",
+    resolve: "@blockonomics/medusa-payment-blockonomics/providers/blockonomics",
     id: "secure",
     options: {
       apiKey: process.env.BLOCKONOMICS_API_KEY,
