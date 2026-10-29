@@ -1,14 +1,14 @@
 # @blockonomics/medusa-payment-blockonomics
 
-Accept Bitcoin payments in [Medusa](https://medusajs.com) v2 through [Blockonomics](https://www.blockonomics.co). Payments go straight to the merchant's own wallet: Blockonomics generates a fresh address for each checkout and notifies Medusa as the transaction is seen and confirmed on-chain.
+Accept Bitcoin in [Medusa](https://medusajs.com) v2 through [Blockonomics](https://www.blockonomics.co). Payments go straight to your own wallet: each checkout gets a fresh address, and Blockonomics notifies Medusa as the transaction confirms.
 
-Blockonomics never holds funds. That makes refunds a manual step, covered under [Refunds](#refunds). Read that section before going live.
+Blockonomics never holds funds, so refunds are manual. See [Refunds](#refunds).
 
 ## Requirements
 
 - Medusa `2.19.0` or later
-- A [Blockonomics](https://www.blockonomics.co) account with a store and a wallet (xPub) attached
-- A Medusa server reachable from the internet, so Blockonomics can deliver callbacks
+- A Blockonomics account with a store and a wallet (xPub) attached
+- A Medusa server reachable from the internet, for callbacks
 
 ## Install
 
@@ -20,21 +20,11 @@ npm install @blockonomics/medusa-payment-blockonomics
 
 ### 1. Register the plugin and the provider
 
-Add the plugin to `plugins`, then register the provider in the Payment Module:
-
 ```ts
 // medusa-config.ts
-import { defineConfig, loadEnv } from "@medusajs/framework/utils"
-
-loadEnv(process.env.NODE_ENV || "development", process.cwd())
-
 module.exports = defineConfig({
-  // ...
   plugins: [
-    {
-      resolve: "@blockonomics/medusa-payment-blockonomics",
-      options: {},
-    },
+    { resolve: "@blockonomics/medusa-payment-blockonomics", options: {} },
   ],
   modules: [
     {
@@ -57,223 +47,94 @@ module.exports = defineConfig({
 })
 ```
 
-Both entries are required. The `plugins` entry loads the callback route; the provider entry loads the payment provider. Without the `plugins` entry, checkout works but callbacks return `404`, and no payment ever completes.
+Both entries are required. Without the `plugins` entry, callbacks return `404` and no payment completes.
 
-```bash
-# .env
-BLOCKONOMICS_API_KEY=your_api_key
-BLOCKONOMICS_CALLBACK_SECRET=MEDUSA_...
-```
-
-Generate the secret by running this in your Medusa project, after installing the plugin:
+Generate the callback secret in your project and add the printed line to `.env` with your API key:
 
 ```bash
 npx blockonomics-callback-secret
+# BLOCKONOMICS_CALLBACK_SECRET=MEDUSA_...
 ```
 
-It prints a `BLOCKONOMICS_CALLBACK_SECRET=MEDUSA_...` line to add to `.env`. Or, without the plugin installed:
-
-```bash
-node -e "console.log('MEDUSA_' + require('crypto').randomBytes(32).toString('hex'))"
-```
-
-The `MEDUSA_` prefix is required; Medusa refuses to start without it. The secret is not issued by Blockonomics.
+The secret must start with `MEDUSA_`. It is yours, not issued by Blockonomics.
 
 ### 2. Set the callback URL in Blockonomics
 
-In the Blockonomics dashboard, open **Stores**, edit the store, and set its callback URL to:
+In the Blockonomics dashboard, under **Stores**, set the store's callback URL to:
 
 ```
 https://your-store.com/hooks/blockonomics/blockonomics_blockonomics?secret=YOUR_CALLBACK_SECRET
 ```
 
-Get this exactly right. A wrong URL fails silently: callbacks arrive, are rejected, and orders stay unpaid.
-
-- The path is `/hooks/blockonomics/blockonomics_{id}`, where `{id}` is the provider's `id` in `medusa-config.ts`. With `id: "blockonomics"` that gives `blockonomics_blockonomics`. If you change the `id`, change the URL.
-- `secret` must equal `BLOCKONOMICS_CALLBACK_SECRET`. Callbacks with a missing or different secret are logged and ignored.
-- Use `/hooks/blockonomics/...`, not Medusa's `/hooks/payment/...`. Blockonomics sends callbacks as `GET` requests, which Medusa's own endpoint does not accept.
+The path is `/hooks/blockonomics/blockonomics_{id}`, where `{id}` is the provider `id`. Callbacks with a wrong secret are ignored, so a typo leaves orders unpaid without any error.
 
 ### 3. Enable the provider in a region
 
-In the Medusa admin, go to **Settings → Regions**, edit the region, and add **Blockonomics** (`pp_blockonomics_blockonomics`) to its payment providers.
+In the Medusa admin, under **Settings → Regions**, add **Blockonomics** (`pp_blockonomics_blockonomics`) to the region.
 
 ## Options
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `apiKey` | - | **Required.** API key of the Blockonomics merchant account. |
-| `callbackSecret` | - | **Required.** Secret on the store's callback URL, starting with `MEDUSA_`. Callbacks without it are ignored. |
-| `confirmations` | `2` | On-chain confirmations a callback has to report before the payment is taken as settled and the order is marked paid: `0`, `1`, or `2`. See [Choosing confirmations](#choosing-confirmations). |
-| `priceLockSeconds` | `600` | How long the quoted BTC amount stays valid. Once it expires with nothing received, the amount is re-quoted at the current rate. Clamped to 300–1800. |
-| `underpaymentTolerance` | `0` | Fraction of the expected amount that may be missing and still count as paid, to absorb rounding and wallet fee deductions. `0.01` allows a 1% shortfall. Blockonomics for WooCommerce calls this underpayment slack. |
-| `overpaymentTolerance` | `0.05` | Excess above which the payment is flagged with `overpaid: true` for manual review. The payment still settles. |
-| `matchCallback` | - | Substring of the store's callback URL. Set it when the Blockonomics account has more than one store, so addresses are generated for the right one. An account with more than one store rejects address generation without it, with error `1032`, `Specify store using match_callback parameter`. |
-| `baseUrl` | `https://www.blockonomics.co` | Base URL of the Blockonomics API. Only useful for testing against a stub. |
+| `apiKey` | - | **Required.** Blockonomics API key. |
+| `callbackSecret` | - | **Required.** Secret on the callback URL, starting with `MEDUSA_`. |
+| `confirmations` | `2` | Confirmations before the order is marked paid: `0`, `1` (~10 min) or `2` (~20 min). `0` risks double-spends. |
+| `priceLockSeconds` | `600` | How long the BTC quote is valid (300–1800). |
+| `underpaymentTolerance` | `0` | Shortfall still counted as paid. `0.01` = 1%. |
+| `overpaymentTolerance` | `0.05` | Excess above which the payment is flagged as overpaid. |
+| `matchCallback` | - | Substring of the store's callback URL. Required if the account has more than one store (else error `1032`). |
+| `baseUrl` | `https://www.blockonomics.co` | API base URL, for testing. |
 
-### Choosing confirmations
+Unconfirmed Replace-By-Fee transactions are never treated as paid. To offer several confirmation levels, register the provider more than once with different `id`s, each with its own Blockonomics store and `matchCallback`.
 
-| Value | Order marked paid | Risk |
-| --- | --- | --- |
-| `0` | As soon as the transaction is seen in the mempool | The sender can still double-spend it. Only use for low-value or reversible fulfilment. |
-| `1` | After about 10 minutes | Low. |
-| `2` | After about 20 minutes | Lowest. Recommended default. |
+## Orders
 
-Whichever value you pick, the order is placed as soon as the transaction is seen and marked paid once it settles. See [Orders](#orders).
-
-Unconfirmed transactions that opted into Replace-By-Fee are never treated as paid, even with `confirmations: 0`, because the sender can still replace them.
-
-### Offering both instant and secure checkout
-
-There is no settings screen for provider options, but you can register the provider twice under different ids and choose between them per region in the admin:
-
-```ts
-// medusa-config.ts
-providers: [
-  {
-    resolve: "@blockonomics/medusa-payment-blockonomics/providers/blockonomics",
-    id: "instant",
-    options: {
-      apiKey: process.env.BLOCKONOMICS_API_KEY,
-      callbackSecret: process.env.BLOCKONOMICS_CALLBACK_SECRET,
-      confirmations: 0,
-    },
-  },
-  {
-    resolve: "@blockonomics/medusa-payment-blockonomics/providers/blockonomics",
-    id: "secure",
-    options: {
-      apiKey: process.env.BLOCKONOMICS_API_KEY,
-      callbackSecret: process.env.BLOCKONOMICS_CALLBACK_SECRET,
-      confirmations: 2,
-    },
-  },
-]
-```
-
-These register as `pp_blockonomics_instant` and `pp_blockonomics_secure`. Each needs its own callback URL, so use a separate Blockonomics store for each, with `matchCallback` set to tell them apart:
-
-```
-https://your-store.com/hooks/blockonomics/blockonomics_instant?secret=...
-https://your-store.com/hooks/blockonomics/blockonomics_secure?secret=...
-```
-
-## Payment lifecycle
-
-The provider follows the payment model of the Blockonomics WooCommerce plugin. Every address handed out for a session is a payment with its own fiat quote, and the callback that reaches `confirmations` settles it:
-
-| Callback | Payment | Payment session status |
-| --- | --- | --- |
-| None yet | `new` - the quote can still be refreshed | `pending` |
-| Below `confirmations` | `in progress` - address and quote are frozen | `pending_authorization`, order is placed |
-| At or above `confirmations`, amount covered | `settled` | `captured`, order is paid |
-| At or above `confirmations`, amount short | `settled`, underpaid | `pending_authorization` |
-
-What a settled payment paid is recorded in satoshis and in fiat, valued at the rate that address was quoted at: a customer who sent 40% of the BTC asked for has paid 40% of the fiat, whatever the rate has done since.
-
-**Underpayments.** The remainder in fiat is quoted on a fresh address at the current rate the next time the quote is refreshed (see [Re-quoting the amount](#re-quoting-the-amount)). The settled address stays on the session as the record of the partial payment. The order is paid once the last address settles in full. Nothing is refunded automatically.
-
-**Overpayments.** The payment settles as normal, and Medusa records the order total as captured. What was actually received is shown in the **Bitcoin payment** box on the order page in the admin, flagged **Overpaid** above `overpaymentTolerance`, and logged as a warning. Refund the difference from your wallet.
-
-A settled address ignores further callbacks. An unconfirmed transaction that opted into Replace-By-Fee only has its transaction id recorded, since the sender can still cancel it.
-
-### Orders
-
-- The order is placed as soon as a transaction is seen. It shows in the admin with payment status **Awaiting**.
-- Once the payment settles in full, it changes to **Captured**. Only fulfil **Captured** orders.
-- An underpaid order stays **Awaiting** until the remainder settles.
-- If a transaction never confirms (e.g. double-spent), the order stays **Awaiting**. Cancel it in the admin.
+- A transaction is seen: the order is placed with payment status **Awaiting**.
+- It reaches `confirmations` and covers the amount: **Captured**. Only fulfil captured orders.
+- **Underpaid:** the order stays **Awaiting**. The remainder is quoted on a new address.
+- **Overpaid:** the order is captured, and the admin order page shows the amount received with an **Overpaid** flag. Refund the difference from your wallet.
+- **Never confirms:** the order stays **Awaiting**. Cancel it in the admin.
 
 ## Storefront
 
-There is no hosted payment page. The storefront shows the customer where to send Bitcoin, using the payment session's `data`.
+There is no hosted payment page. Your storefront renders the payment from the session's `data`. [`examples/checkout-page.js`](https://github.com/blockonomics/medusa-plugin/blob/main/examples/checkout-page.js) is a complete payment screen in plain JavaScript that you can port.
 
-[`examples/checkout-page.js`](https://github.com/blockonomics/medusa-plugin/blob/main/examples/checkout-page.js) is a working payment screen that implements everything in this section, in plain JavaScript with no framework. Start from it and port it to your storefront. [Without a storefront](#without-a-storefront) shows how to run it against a cart.
+Key `data` fields: `address`, `expected_satoshis`, `expected_fiat`, `paid_fiat`, `btc_price`, `price_locked_until` (Unix ms), `payment_status` (`0` none, `1` in progress, `2` settled), `confirmations`, `txid`, `payments` (all addresses for the session).
 
-The session's `data` carries:
+The page should:
 
-| Field | Description |
-| --- | --- |
-| `address` | Bitcoin address to pay. |
-| `expected_satoshis` | Amount to send to it, in satoshis. Divide by `1e8` for BTC. |
-| `expected_fiat` | The same amount in the cart's currency: the order total less what earlier addresses settled. |
-| `fiat_amount` | The order total. |
-| `paid_fiat` | Settled so far, over all addresses of the session. `0` until an underpayment settles. |
-| `btc_price` | Rate the amount was quoted at. |
-| `price_locked_until` | Unix milliseconds until the quote expires. |
-| `payment_status` | `0` nothing seen, `1` payment in progress, `2` settled. |
-| `confirmations` | Confirmations the latest callback reported. |
-| `txid` | Transaction id, once one has been seen. |
-| `payments` | Every address of the session with the fields above, oldest first. |
+1. Show a QR code for `bitcoin:{address}?amount={btc}` and count down to `price_locked_until`.
+2. When the quote expires, or after an underpayment confirms, call the re-quote route below. Do not create a new payment session.
+3. Listen on `wss://www.blockonomics.co/payment/{address}` to detect the payment.
+4. Poll the cart until `completed_at` is set. Callbacks complete the order, so don't complete the cart from the storefront.
 
-The flow the Blockonomics WooCommerce plugin uses, and what to build. The function names point to where the example does each step:
-
-1. Find the cart's payment session whose `provider_id` starts with `pp_blockonomics` (`findSession`).
-2. Show a QR code of `bitcoin:{address}?amount={btc}`, an "Open in wallet" link to the same URI, and the address and amount as copyable fields (`renderPayment`).
-3. Count down to `price_locked_until`. When it runs out, re-quote through the plugin's store route below and update the amount, rate, and QR code (`startTimer`, `refresh`, `requote`). Do not create a new payment session for this: Medusa replaces the session, which hands the customer a new address.
-4. Open `wss://www.blockonomics.co/payment/{address}`, and reconnect if it drops. The first message means the payment has been seen: switch to a receipt screen with the transaction id. Messages carry `status` (`0` unconfirmed, `1`, `2` confirmed), `value` in satoshis, and `txid` (`connectSocket`, `showReceipt`).
-5. If `value` is short of `expected_satoshis`, show the shortfall in fiat (`expected_fiat * (1 - value / expected_satoshis)`). The remainder can be paid once the underpayment has confirmed: call the re-quote route, and when it comes back with a new `address`, return to the payment screen for it. Show `paid_fiat` and `expected_fiat` as the paid and remaining amounts (`offerRemainder`, the **Pay remaining** handler).
-6. Do not complete the cart from the storefront. The callbacks place the order and mark it paid. Poll the cart until `completed_at` is set, and follow the socket for confirmations (`watchOrder`).
-7. When the page is reloaded after paying, `payment_status` is no longer `0`: show the receipt from the session data instead of the payment screen (the boot block at the end of the page script).
-
-### Re-quoting the amount
+### Re-quoting
 
 ```
 POST /store/blockonomics/payment-sessions/{payment_session_id}
 x-publishable-api-key: pk_...
 ```
 
-Runs the provider's price refresh on the session, what the WooCommerce plugin does when its checkout page loads:
-
-- nothing seen yet: the amount is re-quoted at the current rate once the price lock has expired. The address is kept.
-- payment in progress: nothing changes; the customer sent what they were quoted.
-- settled underpayment: a new address is handed out for the remainder at the current rate. The response carries the new `address`.
-
-```json
-{
-  "payment_session": {
-    "id": "payses_...",
-    "status": "pending",
-    "data": { "address": "...", "expected_fiat": 20, "expected_satoshis": 30149, "btc_price": 66338.6, "price_locked_until": 1789701331086, "payment_status": 0 }
-  }
-}
-```
+This refreshes the amount once the price lock has expired. If the session has a settled underpayment, it returns a new `address` for the remainder.
 
 ## Refunds
 
-Bitcoin payments are irreversible, and Blockonomics holds no funds, so refunds cannot go through the provider. **Clicking Refund in the Medusa admin throws an error.**
-
-To refund a customer, send the amount from the wallet that received the payment, and record the refund outside of Medusa.
+Bitcoin payments are irreversible, and refunds cannot go through the provider. **Refund in the Medusa admin throws an error.** Send refunds from your wallet and record them outside Medusa.
 
 ## Testing
 
-Blockonomics has a test mode that fires real callbacks without moving funds.
+1. Expose your server (e.g. ngrok) and point the store's callback URL at it.
+2. Enable **Testmode** on the store in Blockonomics.
+3. Check out with Blockonomics, then send the amount from the [Test Bench](https://www.blockonomics.co/dashboard#/test-bench).
 
-1. Expose your local server with a tunnel such as ngrok, and set the store's callback URL to the tunnel address.
-2. In the Blockonomics dashboard, enable **Testmode** on the store.
-3. Place an order in your storefront and choose Blockonomics.
-4. On the [Test Bench](https://www.blockonomics.co/dashboard#/test-bench), send the quoted amount from the **Test Bitcoin Wallet**.
+Callbacks arrive with status `0` right away, `1` after about 5 minutes and `2` after about 10.
 
-Callbacks arrive with status `0` immediately, `1` after about 5 minutes, and `2` after about 10. The order appears in the admin as **Awaiting** after status `0`, and turns **Captured** at `confirmations`.
-
-Checkout failing with `Blockonomics API responded with 400 for /api/new_address` and error `1032` means the account has more than one store and [`matchCallback`](#options) is unset. Set it to a substring of this store's callback URL that no other store in the account shares.
-
-### Without a storefront
-
-The payment screen can be exercised before a storefront exists. `examples/create-cart.js` builds a cart and a Blockonomics payment session over the Store API, and `examples/checkout-page.js` serves the payment screen for it on port 8000.
+To test without a storefront:
 
 ```bash
-export MEDUSA_URL=http://localhost:9000
-export ADMIN_EMAIL=you@example.com
-export ADMIN_PASSWORD=...
-
-node examples/create-cart.js                 # prints a cart id
-node examples/checkout-page.js <cart_id>     # http://localhost:8000
+MEDUSA_URL=http://localhost:9000 ADMIN_EMAIL=... ADMIN_PASSWORD=... node examples/create-cart.js
+node examples/checkout-page.js <cart_id>   # http://localhost:8000, must be in storeCors
 ```
-
-The payment screen calls the Store API from the browser, so `http://localhost:8000` has to be in the server's `storeCors`. A local Medusa allows it by default. Point `MEDUSA_URL` at a deployed store and you have to add that origin there yourself.
-
-Both need Node 18 or later and have no dependencies. They sign in as an admin only to read a publishable key; everything after that goes through the Store API.
-
 
 ## License
 
