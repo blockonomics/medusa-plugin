@@ -1,6 +1,6 @@
 {
   "name": "@blockonomics/medusa-payment-blockonomics",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Accept Bitcoin payments in Medusa v2 through Blockonomics, straight to the merchant's own wallet.",
   "author": "Blockonomics (https://www.blockonomics.co)",
   "license": "MIT",
