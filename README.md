@@ -74,18 +74,19 @@ In the Medusa admin, under **Settings → Regions**, add **Blockonomics** (`pp_b
 
 ## Options
 
-| Option | Default | Description |
-| --- | --- | --- |
-| `apiKey` | - | **Required.** Blockonomics API key. |
-| `callbackSecret` | - | **Required.** Secret on the callback URL, starting with `MEDUSA_`. |
-| `confirmations` | `2` | Confirmations before the order is marked paid: `0`, `1` (~10 min) or `2` (~20 min). `0` risks double-spends. |
-| `priceLockSeconds` | `600` | How long the BTC quote is valid (300–1800). |
-| `underpaymentTolerance` | `0` | Shortfall still counted as paid. `0.01` = 1%. |
-| `overpaymentTolerance` | `0.05` | Excess above which the payment is flagged as overpaid. |
-| `matchCallback` | - | Substring of the store's callback URL. Required if the account has more than one store (else error `1032`). |
-| `baseUrl` | `https://www.blockonomics.co` | API base URL, for testing. |
+**Required**
 
-Unconfirmed Replace-By-Fee transactions are never treated as paid. To offer several confirmation levels, register the provider more than once with different `id`s, each with its own Blockonomics store and `matchCallback`.
+- `apiKey`: your Blockonomics API key.
+- `callbackSecret`: the secret in the callback URL. Starts with `MEDUSA_`.
+
+**Optional**
+
+- `confirmations` (default `2`): confirmations needed before an order is paid. `1` takes about 10 min, `2` about 20 min. `0` risks double-spends.
+- `priceLockSeconds` (default `600`): how long the BTC quote stays valid, from 300 to 1800.
+- `underpaymentTolerance` (default `0`): how much of a shortfall still counts as paid. `0.01` = 1%.
+- `overpaymentTolerance` (default `0.05`): how much excess is allowed before the order is flagged as overpaid.
+- `matchCallback`: part of the store's callback URL. Needed if your account has more than one store, otherwise you get error `1032`.
+- `baseUrl` (default `https://www.blockonomics.co`): the API base URL. Only change it for testing.
 
 ## Orders
 
