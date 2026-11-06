@@ -1,3 +1,5 @@
+<img src="https://raw.githubusercontent.com/blockonomics/medusa-plugin/main/assets/blockonomics-icon.svg" alt="Blockonomics" width="64" height="64">
+
 # @blockonomics/medusa-payment-blockonomics
 
 Accept Bitcoin in [Medusa](https://medusajs.com) v2 through [Blockonomics](https://www.blockonomics.co). Payments go straight to your own wallet: each checkout gets a fresh address, and Blockonomics notifies Medusa as the transaction confirms.
